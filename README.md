@@ -4,7 +4,13 @@
 
 ## Yêu Cầu Hệ Thống
 
-- PHP >= 8.2
+- PHP >= 8.2 với các extensions:
+  - php-xml (DOMDocument)
+  - php-mbstring
+  - php-curl
+  - php-zip
+  - php-gd
+  - php-mysql (hoặc php-pgsql)
 - Composer
 - Node.js >= 18.x và npm
 - MySQL/PostgreSQL
@@ -60,6 +66,26 @@ npm run dev
 
 ## Deployment trên Server
 
+### Cài đặt PHP Extensions (Ubuntu/Debian)
+
+Trước tiên, đảm bảo đã cài đặt các PHP extensions cần thiết:
+
+```bash
+# Ubuntu/Debian
+sudo apt update
+sudo apt install php-xml php-mbstring php-curl php-zip php-gd php-mysql
+
+# Hoặc nếu dùng PostgreSQL
+sudo apt install php-xml php-mbstring php-curl php-zip php-gd php-pgsql
+
+# Khởi động lại PHP-FPM (nếu dùng)
+sudo systemctl restart php8.2-fpm
+# hoặc
+sudo systemctl restart php-fpm
+```
+
+### Các bước Deployment
+
 Sau khi clone repository trên server, thực hiện các bước sau:
 
 ```bash
@@ -88,9 +114,36 @@ php artisan route:cache
 php artisan view:cache
 ```
 
+## Troubleshooting
+
+### Lỗi "Class DOMDocument not found"
+
+Cài đặt extension php-xml:
+
+```bash
+sudo apt install php-xml
+sudo systemctl restart php8.2-fpm  # hoặc php-fpm
+```
+
+### Lỗi "vite: not found"
+
+Chạy `npm install` trước khi `npm run build`:
+
+```bash
+npm install
+npm run build
+```
+
+### Kiểm tra PHP Extensions
+
+```bash
+php -m | grep -E "xml|mbstring|curl|zip|gd|mysql|pgsql"
+```
+
 ## Lưu Ý
 
 - **Luôn chạy `npm install` trước khi `npm run build`** trên server
+- **Đảm bảo đã cài đặt đầy đủ PHP extensions** trước khi chạy migrations
 - File `node_modules` không được commit vào git (đã ignore)
 - File `.env` không được commit vào git (chứa thông tin nhạy cảm)
 
