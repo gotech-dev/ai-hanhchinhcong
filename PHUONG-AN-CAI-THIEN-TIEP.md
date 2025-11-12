@@ -1,0 +1,418 @@
+# 📋 PHƯƠNG ÁN CẢI THIỆN TIẾP
+
+## 🎯 Mục Tiêu
+
+1. **Paragraph merging:** Giảm từ 36 paragraphs xuống ~16-20 paragraphs
+2. **Text bị tách:** Fix các trường hợp text bị tách như `<p>1 T</p><p><sup>ê</sup></p><p>n cơ quan, tổ chức ch</p>`
+3. **Unicode characters:** Clean up ký tự lạ `ࠀ` trong text content
+
+## 🔍 Phân Tích Vấn Đề
+
+### Vấn Đề 1: Paragraph Merging (36 → ~16-20)
+
+**Hiện trạng:**
+- Từ 43 → 36 paragraphs (giảm 16.3%)
+- Mục tiêu: ~16-20 paragraphs (cần giảm thêm 16-20 paragraphs)
+
+**Vấn đề còn lại:**
+1. `<p>1 T</p>` (3 ký tự) + `<p><sup>ê</sup></p>` (1 ký tự) + `<p>n cơ quan, tổ chức ch</p>` (21 ký tự)
+   - **Lý do:** Paragraph thứ 3 có 21 ký tự (vượt quá threshold 30 ký tự khi merge với paragraph có sup/sub)
+2. `<p>c</p>` (1 ký tự) + `<p>ơ quan, tổ chức hoặc</p>` (20 ký tự)
+   - **Lý do:** Paragraph thứ 2 có 20 ký tự, nhưng logic merge không cover trường hợp này
+3. `<p>ch</p>` (2 ký tự) + `<p>ứ c da nh nhà nướ</p>` (17 ký tự)
+   - **Lý do:** Paragraph thứ 2 có 17 ký tự, nhưng logic merge không cover trường hợp này
+
+**Nguyên nhân:**
+- Logic merge paragraph ≤ 30 ký tự chỉ merge nếu cả 2 đều ≤ 30 ký tự
+- Logic merge paragraph có superscript/subscript chưa cover trường hợp paragraph dài hơn
+- Logic merge paragraph ngắn với paragraph dài hơn chưa đủ mạnh
+
+### Vấn Đề 2: Text Bị Tách
+
+**Hiện trạng:**
+- Vẫn còn: `<p>1 T</p><p><sup>ê</sup></p><p>n cơ quan, tổ chức ch</p>`
+- Vẫn còn: `<p>c</p><p>ơ quan, tổ chức hoặc</p>`
+- Vẫn còn: `<p>ch</p><p>ứ c da nh nhà nướ</p>`
+
+**Nguyên nhân:**
+- Pattern `<p>1 T</p><p><sup>ê</sup></p><p>n cơ quan, tổ chức ch</p>` không match vì:
+  - `n cơ quan, tổ chức ch` có 21 ký tự (vượt quá threshold 5 ký tự trong `mergeSplitTextWithSupSub()`)
+  - Logic merge chỉ merge nếu text ≤ 5 ký tự
+- Pattern `<p>c</p><p>ơ quan, tổ chức hoặc</p>` không match vì:
+  - `ơ quan, tổ chức hoặc` có 20 ký tự (vượt quá threshold 5 ký tự trong `mergeSplitTextWithoutSupSub()`)
+  - Logic merge chỉ merge nếu text ≤ 5 ký tự
+
+### Vấn Đề 3: Unicode Characters
+
+**Hiện trạng:**
+- Vẫn còn: `"2 Tên cơ quࠀ2 Tên cơ quࠀ"`
+- Ký tự `ࠀ` không phải `\uFFFD` (Unicode replacement character)
+
+**Nguyên nhân:**
+- Logic clean up chỉ xóa `\uFFFD` và `_x0007_`
+- Ký tự `ࠀ` có thể là ký tự Unicode khác (cần kiểm tra mã Unicode)
+
+## 🛠️ Phương Án Chi Tiết
+
+### Giải Pháp 1: Cải Thiện Paragraph Merging (36 → ~16-20)
+
+#### 1.1. Tăng Threshold Merge Từ 30 Lên 50 Ký Tự
+
+**Logic mới:**
+- Merge paragraph ngắn (< 50 ký tự) nếu không có block elements
+- Chỉ merge nếu cả 2 đều ≤ 50 ký tự và không có block elements
+
+**Code đề xuất:**
+```php
+// ✅ FIX: Merge paragraph ngắn (< 50 ký tự) nếu không có block elements (thêm mới)
+if ($textLength1 <= 50 && $textLength2 <= 50 && $textLength1 > 0 && $textLength2 > 0) {
+    // Check if they have block elements
+    $hasBlock1 = preg_match('/<(table|ul|ol|div|h[1-6])/i', $p1);
+    $hasBlock2 = preg_match('/<(table|ul|ol|div|h[1-6])/i', $p2);
+    
+    if (!$hasBlock1 && !$hasBlock2) {
+        $totalMerged++;
+        $merged = $content1 . ($content1 && $content2 ? ' ' : '') . $content2;
+        return '<p>' . $merged . '</p>';
+    }
+}
+```
+
+**Lưu ý:**
+- Giữ nguyên logic merge paragraph ≤ 20 ký tự và ≤ 30 ký tự (không thay đổi)
+- Thêm logic mới cho paragraph ≤ 50 ký tự (thêm mới)
+- Không ảnh hưởng logic hiện tại
+
+#### 1.2. Merge Paragraph Có Superscript/Subscript Với Paragraph Dài Hơn
+
+**Logic mới:**
+- Merge paragraph chỉ có superscript/subscript với paragraph trước/sau (nếu paragraph trước/sau ≤ 50 ký tự)
+- Merge paragraph ngắn (≤ 5 ký tự) với paragraph dài hơn (≤ 50 ký tự)
+
+**Code đề xuất:**
+```php
+// ✅ FIX: Merge paragraph chỉ có superscript/subscript với paragraph trước/sau (nếu paragraph trước/sau ≤ 50 ký tự)
+// Ví dụ: <p>1 T</p><p><sup>ê</sup></p><p>n cơ quan, tổ chức ch</p> → <p>1 T<sup>ê</sup>n cơ quan, tổ chức ch</p>
+if (preg_match('/^<p[^>]*>(<sup|<sub)/i', $p2) && $textLength2 === 0 && $textLength1 > 0 && $textLength1 <= 50) {
+    $totalMerged++;
+    $content1 = preg_replace('/^<p[^>]*>|<\/p>$/i', '', $p1);
+    $content2 = preg_replace('/^<p[^>]*>|<\/p>$/i', '', $p2);
+    return '<p>' . $content1 . ' ' . $content2 . '</p>';
+}
+
+// ✅ FIX: Merge paragraph ngắn (≤ 5 ký tự) với paragraph dài hơn (≤ 50 ký tự)
+// Ví dụ: <p>c</p><p>ơ quan, tổ chức hoặc</p> → <p>cơ quan, tổ chức hoặc</p>
+if ($textLength1 <= 5 && $textLength2 <= 50 && $textLength1 > 0 && $textLength2 > 0) {
+    $hasBlock1 = preg_match('/<(table|ul|ol|div|h[1-6])/i', $p1);
+    $hasBlock2 = preg_match('/<(table|ul|ol|div|h[1-6])/i', $p2);
+    
+    if (!$hasBlock1 && !$hasBlock2) {
+        $totalMerged++;
+        $merged = $content1 . $content2; // Không có space vì merge text cùng một từ
+        return '<p>' . $merged . '</p>';
+    }
+}
+```
+
+#### 1.3. Merge Paragraph Ngắn Với Paragraph Dài Hơn (Nếu Cả 2 Đều Ngắn)
+
+**Logic mới:**
+- Merge paragraph ngắn (≤ 10 ký tự) với paragraph dài hơn (≤ 50 ký tự) nếu cả 2 đều không có block elements
+
+**Code đề xuất:**
+```php
+// ✅ FIX: Merge paragraph ngắn (≤ 10 ký tự) với paragraph dài hơn (≤ 50 ký tự)
+// Ví dụ: <p>ch</p><p>ứ c da nh nhà nướ</p> → <p>chứ c da nh nhà nướ</p>
+if ($textLength1 <= 10 && $textLength2 <= 50 && $textLength1 > 0 && $textLength2 > 0) {
+    $hasBlock1 = preg_match('/<(table|ul|ol|div|h[1-6])/i', $p1);
+    $hasBlock2 = preg_match('/<(table|ul|ol|div|h[1-6])/i', $p2);
+    
+    if (!$hasBlock1 && !$hasBlock2) {
+        $totalMerged++;
+        $merged = $content1 . $content2; // Không có space vì merge text cùng một từ
+        return '<p>' . $merged . '</p>';
+    }
+}
+```
+
+### Giải Pháp 2: Fix Text Bị Tách
+
+#### 2.1. Tăng Threshold Trong `mergeSplitTextWithSupSub()` Từ 5 Lên 30 Ký Tự
+
+**Logic mới:**
+- Merge pattern: `<p>text (1-30 ký tự, có thể có space)</p><p><sup>...</sup></p><p>text (1-30 ký tự)</p>`
+- Tăng threshold từ 5 ký tự lên 30 ký tự
+
+**Code đề xuất:**
+```php
+protected function mergeSplitTextWithSupSub(string $html): string
+{
+    // ✅ FIX: Merge pattern: <p>text (1-30 ký tự, có thể có space)</p><p><sup>...</sup></p><p>text (1-30 ký tự)</p>
+    // Tăng threshold từ 5 ký tự lên 30 ký tự
+    $html = preg_replace_callback(
+        '/(<p[^>]*>([^<]{1,30})\s*<\/p>)\s*(<p[^>]*>(<sup|<sub)[^>]*>[\s\S]*?<\/\1>[\s\S]*?<\/p>)\s*(<p[^>]*>([^<]{1,30})<\/p>)/i',
+        function($matches) {
+            $text1 = trim($matches[2]);
+            $pSup = $matches[3];
+            $text2 = trim($matches[6]);
+            
+            // ✅ FIX: Extract sup/sub content
+            preg_match('/<(sup|sub)[^>]*>([\s\S]*?)<\/\1>/i', $pSup, $supMatch);
+            $supContent = $supMatch ? '<' . $supMatch[1] . '>' . $supMatch[2] . '</' . $supMatch[1] . '>' : '';
+            
+            // ✅ FIX: Merge thành một paragraph
+            $merged = $text1 . $supContent . $text2;
+            return '<p>' . $merged . '</p>';
+        },
+        $html
+    );
+    
+    return $html;
+}
+```
+
+#### 2.2. Tăng Threshold Trong `mergeSplitTextWithoutSupSub()` Từ 5 Lên 30 Ký Tự
+
+**Logic mới:**
+- Merge pattern: `<p>text</p><p>text</p>` (cả 2 đều ≤ 30 ký tự, không có block elements)
+- Tăng threshold từ 5 ký tự lên 30 ký tự
+
+**Code đề xuất:**
+```php
+protected function mergeSplitTextWithoutSupSub(string $html): string
+{
+    // ✅ FIX: Merge pattern: <p>text</p><p>text</p> (cả 2 đều ≤ 30 ký tự, không có block elements)
+    // Tăng threshold từ 5 ký tự lên 30 ký tự
+    $html = preg_replace_callback(
+        '/(<p[^>]*>([^<]{1,30})<\/p>)\s*(<p[^>]*>([^<]{1,30})<\/p>)/i',
+        function($matches) {
+            $p1 = $matches[1];
+            $p2 = $matches[3];
+            $text1 = trim($matches[2]);
+            $text2 = trim($matches[4]);
+            
+            // ✅ FIX: Chỉ merge nếu không có sup/sub và không có block elements
+            if (!preg_match('/<sup|<sub|<table|<ul|<ol|<div|<h[1-6]/i', $p1) && 
+                !preg_match('/<sup|<sub|<table|<ul|<ol|<div|<h[1-6]/i', $p2)) {
+                // ✅ FIX: Merge không có space nếu cả 2 đều rất ngắn (≤ 3 ký tự)
+                if (strlen($text1) <= 3 && strlen($text2) <= 3) {
+                    $merged = $text1 . $text2;
+                } else {
+                    $merged = $text1 . ' ' . $text2;
+                }
+                return '<p>' . $merged . '</p>';
+            }
+            
+            return $p1 . "\n" . $p2;
+        },
+        $html
+    );
+    
+    return $html;
+}
+```
+
+#### 2.3. Tăng Threshold Trong `mergeSplitTextWithSpace()` Từ 5 Lên 30 Ký Tự
+
+**Logic mới:**
+- Merge pattern: `<p>text (có thể có space, 1-30 ký tự)</p><p><sup>...</sup></p><p>text (1-30 ký tự)</p>`
+- Tăng threshold từ 5 ký tự lên 30 ký tự
+
+**Code đề xuất:**
+```php
+protected function mergeSplitTextWithSpace(string $html): string
+{
+    // ✅ FIX: Merge pattern: <p>text (có thể có space, 1-30 ký tự)</p><p><sup>...</sup></p><p>text (1-30 ký tự)</p>
+    // Tăng threshold từ 5 ký tự lên 30 ký tự
+    $html = preg_replace_callback(
+        '/(<p[^>]*>([^<]{1,30})\s*<\/p>)\s*(<p[^>]*>(<sup|<sub)[^>]*>[\s\S]*?<\/\1>[\s\S]*?<\/p>)\s*(<p[^>]*>([^<]{1,30})<\/p>)/i',
+        function($matches) {
+            $text1 = trim($matches[2]);
+            $pSup = $matches[3];
+            $text2 = trim($matches[6]);
+            
+            // ✅ FIX: Extract sup/sub content
+            preg_match('/<(sup|sub)[^>]*>([\s\S]*?)<\/\1>/i', $pSup, $supMatch);
+            $supContent = $supMatch ? '<' . $supMatch[1] . '>' . $supMatch[2] . '</' . $supMatch[1] . '>' : '';
+            
+            // ✅ FIX: Merge thành một paragraph (giữ space trong text1 nếu có)
+            $merged = $text1 . $supContent . $text2;
+            return '<p>' . $merged . '</p>';
+        },
+        $html
+    );
+    
+    return $html;
+}
+```
+
+### Giải Pháp 3: Clean Up Unicode Characters
+
+#### 3.1. Clean Up Tất Cả Ký Tự Unicode Không Hợp Lệ
+
+**Logic mới:**
+- Clean up tất cả ký tự Unicode không hợp lệ (không phải ASCII, không phải Unicode hợp lệ)
+- Clean up ký tự `ࠀ` (cần kiểm tra mã Unicode)
+
+**Code đề xuất:**
+```php
+protected function cleanUpUnicodeInText(string $html): string
+{
+    // ✅ FIX: Clean up Unicode replacement character trong text content
+    $html = preg_replace_callback(
+        '/<p[^>]*>([\s\S]*?)<\/p>/i',
+        function($matches) {
+            $content = $matches[1];
+            
+            // ✅ FIX: Clean up Unicode replacement character
+            $content = preg_replace('/[\x{FFFD}]/u', '', $content);
+            
+            // ✅ FIX: Clean up control characters
+            $content = preg_replace('/_x000[0-9a-fA-F]+_/i', '', $content);
+            
+            // ✅ FIX: Clean up ký tự Unicode không hợp lệ (không phải ASCII, không phải Unicode hợp lệ)
+            // Pattern: Xóa ký tự không phải ASCII printable (0x20-0x7E) và không phải Unicode hợp lệ
+            $content = preg_replace('/[\x{00}-\x{08}\x{0B}-\x{0C}\x{0E}-\x{1F}\x{7F}-\x{9F}]/u', '', $content);
+            
+            // ✅ FIX: Clean up ký tự `ࠀ` (Unicode U+0800 - cần kiểm tra mã Unicode chính xác)
+            // Ký tự `ࠀ` có thể là U+0800 (Samaritan Letter Alaf) hoặc ký tự khác
+            // Thử clean up ký tự trong range U+0800-U+08FF (Samaritan block)
+            $content = preg_replace('/[\x{0800}-\x{08FF}]/u', '', $content);
+            
+            return '<p>' . $content . '</p>';
+        },
+        $html
+    );
+    
+    return $html;
+}
+```
+
+#### 3.2. Clean Up Ký Tự Unicode Cụ Thể
+
+**Logic mới:**
+- Clean up ký tự `ࠀ` cụ thể (nếu biết mã Unicode chính xác)
+- Clean up các ký tự Unicode không hợp lệ khác
+
+**Code đề xuất:**
+```php
+// ✅ FIX: Clean up ký tự `ࠀ` cụ thể
+// Ký tự `ࠀ` có thể là U+0800 (Samaritan Letter Alaf) hoặc ký tự khác
+// Thử clean up ký tự trong range U+0800-U+08FF (Samaritan block)
+$content = preg_replace('/[\x{0800}-\x{08FF}]/u', '', $content);
+
+// ✅ FIX: Hoặc clean up ký tự cụ thể nếu biết mã Unicode
+// Ví dụ: Nếu `ࠀ` là U+0800, thì:
+// $content = preg_replace('/\x{0800}/u', '', $content);
+```
+
+## 📝 Implementation Plan
+
+### Step 1: Cải Thiện Paragraph Merging Logic
+
+**File:** `app/Services/PandocDocxToHtmlConverter.php`
+**Method:** `mergeShortParagraphs()`
+
+**Changes:**
+1. ✅ Thêm logic merge paragraph ≤ 50 ký tự (thêm mới)
+2. ✅ Thêm logic merge paragraph có superscript/subscript với paragraph dài hơn (thêm mới)
+3. ✅ Thêm logic merge paragraph ngắn với paragraph dài hơn (thêm mới)
+
+### Step 2: Cải Thiện Post-Processing Cho Text Bị Tách
+
+**File:** `app/Services/PandocDocxToHtmlConverter.php`
+**Methods:** `mergeSplitTextWithSupSub()`, `mergeSplitTextWithoutSupSub()`, `mergeSplitTextWithSpace()`
+
+**Changes:**
+1. ✅ Tăng threshold trong `mergeSplitTextWithSupSub()` từ 5 lên 30 ký tự
+2. ✅ Tăng threshold trong `mergeSplitTextWithoutSupSub()` từ 5 lên 30 ký tự
+3. ✅ Tăng threshold trong `mergeSplitTextWithSpace()` từ 5 lên 30 ký tự
+
+### Step 3: Clean Up Unicode Characters
+
+**File:** `app/Services/PandocDocxToHtmlConverter.php`
+**Method:** `cleanUpUnicodeInText()`
+
+**Changes:**
+1. ✅ Thêm logic clean up ký tự Unicode không hợp lệ
+2. ✅ Thêm logic clean up ký tự `ࠀ` (range U+0800-U+08FF)
+
+## ⚠️ Lưu Ý: Không Ảnh Hưởng Logic Hiện Tại
+
+### 1. Backward Compatibility
+- ✅ **Giữ nguyên logic merge paragraph ≤ 20 ký tự** - Không thay đổi
+- ✅ **Giữ nguyên logic merge paragraph ≤ 30 ký tự** - Không thay đổi
+- ✅ **Chỉ thêm logic mới** - Không thay đổi logic cũ
+- ✅ **Thêm method mới** - Không sửa method cũ
+
+### 2. Testing Strategy
+- ✅ **Test với template hiện tại** - Đảm bảo không break
+- ✅ **Test với template mới** - Đảm bảo hoạt động đúng
+- ✅ **Test với các trường hợp edge case:**
+  - Paragraph có block elements (table, list, div)
+  - Paragraph có nhiều superscript/subscript
+  - Paragraph rỗng hoặc chỉ có whitespace
+  - Paragraph chỉ có dấu chấm câu hoặc số
+  - Text bị tách với nhiều pattern khác nhau
+  - Unicode characters trong text content
+
+### 3. Rollback Plan
+- ✅ **Có thể rollback bằng cách comment out code mới** - Dễ dàng rollback
+- ✅ **Logic cũ vẫn hoạt động bình thường** - Không ảnh hưởng
+
+### 4. Performance
+- ✅ **Không ảnh hưởng performance** - Chỉ thêm regex replace
+- ✅ **Iterative approach** - Tối đa 10 iterations
+- ✅ **Early exit** - Break nếu không có thay đổi
+
+## 🎯 Kết Quả Mong Đợi
+
+### Trước
+- 36 paragraphs
+- Text bị tách: `<p>1 T</p><p><sup>ê</sup></p><p>n cơ quan, tổ chức ch</p>`
+- Unicode characters: `ࠀ` trong "2 Tên cơ quࠀ2 Tên cơ quࠀ"
+
+### Sau
+- ~16-20 paragraphs (giảm từ 36)
+- Text không bị tách: `<p>1 T<sup>ê</sup>n cơ quan, tổ chức ch</p>`
+- Unicode characters được clean up: "2 Tên cơ qu2 Tên cơ qu"
+
+## 📊 Testing Plan
+
+### Test Case 1: Paragraph Merging
+- **Input:** 36 paragraphs
+- **Expected:** ~16-20 paragraphs
+- **Test:** Count paragraphs sau khi merge
+
+### Test Case 2: Text Bị Tách
+- **Input:** `<p>1 T</p><p><sup>ê</sup></p><p>n cơ quan, tổ chức ch</p>`
+- **Expected:** `<p>1 T<sup>ê</sup>n cơ quan, tổ chức ch</p>`
+- **Test:** Check HTML output
+
+### Test Case 3: Text Bị Tách (Không Có Sup/Sub)
+- **Input:** `<p>c</p><p>ơ quan, tổ chức hoặc</p>`
+- **Expected:** `<p>cơ quan, tổ chức hoặc</p>`
+- **Test:** Check HTML output
+
+### Test Case 4: Unicode Characters
+- **Input:** "2 Tên cơ quࠀ2 Tên cơ quࠀ"
+- **Expected:** "2 Tên cơ qu2 Tên cơ qu"
+- **Test:** Check HTML output
+
+### Test Case 5: Block Elements
+- **Input:** Paragraph có table, list, div
+- **Expected:** Không merge paragraph có block elements
+- **Test:** Check HTML output
+
+## 🚀 Next Steps
+
+1. ✅ Implement Step 1: Cải thiện paragraph merging logic
+2. ✅ Implement Step 2: Cải thiện post-processing cho text bị tách
+3. ✅ Implement Step 3: Clean up Unicode characters
+4. ✅ Test với template hiện tại
+5. ✅ Test với template mới
+6. ✅ Monitor performance
+7. ✅ Collect feedback
+
+
+
