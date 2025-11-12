@@ -52,21 +52,39 @@ Chỉnh sửa file `.env` với thông tin database và các API keys cần thi�
 php artisan migrate
 ```
 
-### 6. Chạy Seeders (Tạo tài khoản mặc định)
+### 6. Chạy Seeders (Tạo tài khoản và trợ lý mặc định)
 
 ```bash
 php artisan db:seed
 ```
 
-Hoặc chỉ chạy UserSeeder:
+Hoặc chạy từng seeder riêng:
 
 ```bash
+# Chỉ tạo tài khoản
 php artisan db:seed --class=UserSeeder
+
+# Chỉ tạo assistant types
+php artisan db:seed --class=AssistantTypeSystemPromptSeeder
+
+# Chỉ tạo danh sách trợ lý
+php artisan db:seed --class=AiAssistantSeeder
 ```
 
 **Tài khoản mặc định được tạo:**
 - **Admin**: `admin@gotechjsc.com` / `123456`
 - **User**: `gotechjsc@gmail.com` / `123456`
+
+**Danh sách trợ lý mặc định được tạo:**
+- Trợ lý Q&A Tài liệu
+- Trợ lý Soạn thảo Văn bản
+- Trợ lý Quản lý Văn bản
+- Trợ lý Quản lý Nhân sự
+- Trợ lý Quản lý Tài chính
+- Trợ lý Quản lý Dự án
+- Trợ lý Quản lý Khiếu nại
+- Trợ lý Tổ chức Sự kiện
+- Trợ lý Quản lý Tài sản
 
 ### 7. Build Frontend Assets
 
@@ -124,7 +142,7 @@ php artisan key:generate
 # 6. Chạy migrations
 php artisan migrate --force
 
-# 7. Chạy seeders (tạo tài khoản mặc định)
+# 7. Chạy seeders (tạo tài khoản, assistant types và danh sách trợ lý)
 php artisan db:seed
 
 # 8. Tối ưu hóa
