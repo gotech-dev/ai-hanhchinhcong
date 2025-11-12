@@ -17,6 +17,8 @@ class DatabaseSeeder extends Seeder
     {
         $this->call([
             UserSeeder::class,
+            AssistantTypeSystemPromptSeeder::class, // Tạo assistant types trước
+            AiAssistantSeeder::class, // Tạo danh sách trợ lý
         ]);
     }
 }
