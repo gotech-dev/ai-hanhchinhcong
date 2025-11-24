@@ -69,6 +69,7 @@ class ChatController extends Controller
         
         // Get expected greeting message from assistant
         // Special handling for document_drafting assistant: include template list
+        $greetingMetadata = null;
         if ($assistant->getAssistantTypeValue() === 'document_drafting') {
             $templates = $assistant->documentTemplates()
                 ->where('is_active', true)
@@ -78,9 +79,28 @@ class ChatController extends Controller
             if ($templates->isNotEmpty()) {
                 $templateNames = $templates->pluck('name')->toArray();
                 $templateList = implode(', ', $templateNames);
-                $expectedGreetingMessage = "Xin chào bạn. Mình là Trợ lý soạn thảo văn bản. Mình có thể giúp bạn tạo nhanh các văn bản như : {$templateList}.";
+                $expectedGreetingMessage = "Xin chào bạn. Mình là {$assistant->name}. Mình có thể giúp bạn tạo nhanh các văn bản mẫu.";
+                
+                // ✅ MỚI: Thêm template info vào metadata để frontend render button
+                $greetingMetadata = [
+                    'has_template' => true,
+                    'template_count' => $templates->count(),
+                    'templates' => $templates->map(function ($template) {
+                        return [
+                            'id' => $template->id,
+                            'name' => $template->name,
+                            'document_type' => $template->document_type,
+                            'has_html_preview' => !empty($template->metadata['html_preview']),
+                        ];
+                    })->toArray(),
+                    'primary_template' => $templates->count() === 1 ? [
+                        'id' => $templates->first()->id,
+                        'name' => $templates->first()->name,
+                        'document_type' => $templates->first()->document_type,
+                    ] : null,
+                ];
             } else {
-                $expectedGreetingMessage = $assistant->greeting_message ?? "Xin chào bạn. Mình là Trợ lý soạn thảo văn bản. Mình rất vui được giúp đỡ bạn.";
+                $expectedGreetingMessage = $assistant->greeting_message ?? "Xin chào bạn. Mình là {$assistant->name}. Mình rất vui được giúp đỡ bạn.";
             }
         } else {
             $expectedGreetingMessage = $assistant->greeting_message ?? "Xin chào bạn. Mình là {$assistant->name}. Mình rất vui được giúp đỡ bạn.";
@@ -92,6 +112,7 @@ class ChatController extends Controller
                 'chat_session_id' => $session->id,
                 'sender' => 'assistant',
                 'content' => $expectedGreetingMessage,
+                'metadata' => $greetingMetadata ? ['template_info' => $greetingMetadata] : null,
                 'created_at' => now(),
             ]);
             

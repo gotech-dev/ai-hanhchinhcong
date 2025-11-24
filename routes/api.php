@@ -77,11 +77,142 @@ Route::middleware('auth:web')->group(function () {
         // Preview document as HTML (95%+ format preservation)
         Route::get('/{messageId}/preview-html', [\App\Http\Controllers\DocumentController::class, 'previewHtml']);
         
+        // Update document HTML preview (for editing)
+        Route::put('/{messageId}/html-preview', [\App\Http\Controllers\DocumentController::class, 'updateDocumentHtmlPreview']);
+        
         // Download document
         Route::get('/{messageId}/download', [\App\Http\Controllers\DocumentController::class, 'download']);
         
         // Compare DOCX with HTML preview
         Route::get('/{messageId}/compare', [\App\Http\Controllers\DocumentController::class, 'compare']);
+    });
+    
+    // ✅ MỚI: Template routes (for template HTML preview)
+    Route::prefix('templates')->group(function () {
+        // Preview template as HTML (from saved HTML in metadata)
+        Route::get('/{templateId}/preview-html', [\App\Http\Controllers\DocumentController::class, 'previewTemplateHtml']);
+        
+        // Update template HTML preview
+        Route::put('/{templateId}/html-preview', [\App\Http\Controllers\DocumentController::class, 'updateHtmlPreview']);
+        
+        // ✅ DEBUG: Check template HTML for assistant
+        Route::get('/debug/assistant/{assistantId}', function ($assistantId) {
+            $assistant = \App\Models\AiAssistant::find($assistantId);
+            if (!$assistant) {
+                return response()->json(['error' => 'Assistant not found'], 404);
+            }
+            
+            $templates = \App\Models\DocumentTemplate::where('ai_assistant_id', $assistantId)
+                ->where('is_active', true)
+                ->get();
+            
+            $result = [
+                'assistant' => [
+                    'id' => $assistant->id,
+                    'name' => $assistant->name,
+                    'type' => $assistant->assistant_type,
+                ],
+                'templates' => [],
+            ];
+            
+            foreach ($templates as $template) {
+                $metadata = $template->metadata ?? [];
+                $htmlPreview = $metadata['html_preview'] ?? null;
+                
+                $templateInfo = [
+                    'id' => $template->id,
+                    'name' => $template->name,
+                    'document_type' => $template->document_type,
+                    'file_name' => $template->file_name,
+                    'file_type' => $template->file_type,
+                    'file_path' => $template->file_path,
+                    'has_html_preview' => !empty($htmlPreview),
+                    'html_preview_length' => $htmlPreview ? strlen($htmlPreview) : 0,
+                    'cached_at' => $metadata['html_preview_cached_at'] ?? null,
+                ];
+                
+                if ($htmlPreview) {
+                    // Extract sample text
+                    $textOnly = strip_tags($htmlPreview);
+                    $templateInfo['html_preview_sample'] = mb_substr($textOnly, 0, 500);
+                    
+                    // Count paragraphs
+                    $templateInfo['p_tag_count'] = substr_count($htmlPreview, '<p');
+                    
+                    // Extract first 5 paragraphs
+                    preg_match_all('/<p[^>]*>(.*?)<\/p>/is', $htmlPreview, $matches);
+                    $firstParagraphs = [];
+                    foreach (array_slice($matches[1], 0, 5) as $pContent) {
+                        $text = trim(strip_tags($pContent));
+                        $text = preg_replace('/\s+/', ' ', $text);
+                        if (!empty($text)) {
+                            $firstParagraphs[] = mb_substr($text, 0, 200);
+                        }
+                    }
+                    $templateInfo['first_5_paragraphs'] = $firstParagraphs;
+                    
+                    // ✅ FULL HTML để inspect
+                    $templateInfo['html_preview_full'] = $htmlPreview;
+                }
+                
+                $result['templates'][] = $templateInfo;
+            }
+            
+            return response()->json($result, 200, [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        });
+        
+        // ✅ DEBUG: Check specific template by ID
+        Route::get('/debug/template/{templateId}', function ($templateId) {
+            $template = \App\Models\DocumentTemplate::find($templateId);
+            if (!$template) {
+                return response()->json(['error' => 'Template not found'], 404);
+            }
+            
+            $metadata = $template->metadata ?? [];
+            $htmlPreview = $metadata['html_preview'] ?? null;
+            
+            $result = [
+                'template' => [
+                    'id' => $template->id,
+                    'name' => $template->name,
+                    'document_type' => $template->document_type,
+                    'file_name' => $template->file_name,
+                    'file_type' => $template->file_type,
+                    'file_path' => $template->file_path,
+                    'assistant_id' => $template->ai_assistant_id,
+                ],
+                'html_preview' => [
+                    'exists' => !empty($htmlPreview),
+                    'length' => $htmlPreview ? strlen($htmlPreview) : 0,
+                    'cached_at' => $metadata['html_preview_cached_at'] ?? null,
+                ],
+            ];
+            
+            if ($htmlPreview) {
+                $textOnly = strip_tags($htmlPreview);
+                $result['html_preview']['sample_text'] = mb_substr($textOnly, 0, 500);
+                $result['html_preview']['p_tag_count'] = substr_count($htmlPreview, '<p');
+                $result['html_preview']['full_html'] = $htmlPreview;
+                
+                // Extract first 10 paragraphs
+                preg_match_all('/<p[^>]*>(.*?)<\/p>/is', $htmlPreview, $matches);
+                $paragraphs = [];
+                foreach (array_slice($matches[1], 0, 10) as $i => $pContent) {
+                    $text = trim(strip_tags($pContent));
+                    $text = preg_replace('/\s+/', ' ', $text);
+                    if (!empty($text)) {
+                        $paragraphs[] = [
+                            'index' => $i + 1,
+                            'text' => $text,
+                            'length' => mb_strlen($text),
+                        ];
+                    }
+                }
+                $result['html_preview']['first_10_paragraphs'] = $paragraphs;
+            }
+            
+            return response()->json($result, 200, [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        });
     });
     
     // Assistant routes (for authenticated users)
@@ -94,6 +225,9 @@ Route::middleware('auth:web')->group(function () {
         
         // Delete assistant (admin only)
         Route::delete('/{id}', [AssistantController::class, 'destroy']);
+        
+        // ✅ MỚI: Preview template của assistant (cho user)
+        Route::get('/{assistantId}/template-preview', [\App\Http\Controllers\DocumentController::class, 'previewAssistantTemplate']);
     });
     
     // Admin routes

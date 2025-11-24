@@ -155,6 +155,15 @@
                         </div>
                     </div>
                     
+                    <!-- ✅ MỚI: Hiển thị Template HTML Preview nếu có -->
+                    <div
+                        v-if="message.sender === 'assistant' && message.metadata?.template_preview"
+                        class="template-preview mt-4 p-4 bg-white border border-gray-200 rounded-lg"
+                    >
+                        <div class="mb-2 text-sm font-semibold text-gray-700">📄 Template Preview:</div>
+                        <div class="docx-preview" v-html="message.content"></div>
+                    </div>
+                    
                     <!-- ✅ MỚI: Hiển thị DocumentPreview nếu có document metadata -->
                     <DocumentPreview
                         v-if="message.sender === 'assistant' && message.metadata?.document"
@@ -173,8 +182,17 @@
                         />
                     </div>
                     
-                    <!-- Regular message content - Only show if no report and no document -->
-                    <div v-if="(!message.report && !message.metadata?.document) || message.sender === 'user'" class="markdown-content" v-html="renderMarkdown(message.content)"></div>
+                    <!-- Regular message content - Hiển thị greeting message như cũ -->
+                    <div v-if="(!message.report && !message.metadata?.document && !message.metadata?.template_preview) || message.sender === 'user'" class="markdown-content" v-html="renderMarkdown(message.content)"></div>
+                    
+                    <!-- ✅ MỚI: Hiển thị TemplateCard bên dưới greeting message nếu có template info -->
+                    <TemplateCard
+                        v-if="message.sender === 'assistant' && message.metadata?.template_info && message.metadata.template_info.has_template"
+                        :template-info="message.metadata.template_info"
+                        :assistant-id="currentAssistant?.id"
+                        @template-preview="handleTemplatePreview"
+                        @create-from-template="handleCreateFromTemplate"
+                    />
                     
                     <div
                         :class="[
@@ -426,6 +444,7 @@ import DocumentReminderCard from '../../Components/DocumentReminderCard.vue';
 import DocumentList from '../../Components/DocumentList.vue';
 import DocumentSearchResults from '../../Components/DocumentSearchResults.vue';
 import DocumentClassificationResult from '../../Components/DocumentClassificationResult.vue';
+import TemplateCard from '../../Components/TemplateCard.vue';
 
 const props = defineProps({
     auth: Object,
@@ -643,6 +662,43 @@ const loadAssistants = async () => {
     } catch (error) {
         console.error('Error loading assistants:', error);
     }
+};
+
+// ✅ MỚI: Handle template preview
+const handleTemplatePreview = (html) => {
+    console.log('[IndexNew] Template preview received', {
+        htmlLength: html.length,
+    });
+    
+    // Create assistant message với template HTML
+    const templateMessage = {
+        id: generateMessageId(),
+        sender: 'assistant',
+        content: html,
+        metadata: {
+            template_preview: true,
+            content_type: 'html',
+        },
+        created_at: new Date().toISOString(),
+    };
+    
+    messages.value.push(templateMessage);
+    scrollToBottom();
+};
+
+// ✅ MỚI: Handle create from template
+const handleCreateFromTemplate = (messageText) => {
+    console.log('[IndexNew] Create from template triggered', {
+        messageText,
+    });
+    
+    // Set message input và trigger send
+    messageInput.value = messageText;
+    
+    // Trigger send message
+    nextTick(() => {
+        sendMessage();
+    });
 };
 
 const handleAssistantSelect = async (assistantId) => {
@@ -1681,6 +1737,29 @@ onMounted(() => {
     border-radius: 0.25em;
     font-family: monospace;
     font-size: 0.9em;
+}
+
+/* ✅ MỚI: Styling cho template preview */
+.template-preview {
+    max-width: 100%;
+}
+
+.template-preview .docx-preview {
+    font-family: 'Times New Roman', serif;
+    line-height: 1.6;
+    color: #333;
+    max-width: 800px;
+    width: 100%;
+    margin: 0 auto;
+    overflow-x: auto;
+    overflow-y: visible;
+    word-wrap: break-word;
+    background: white;
+    padding: 30px 40px;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    box-sizing: border-box;
 }
 
 .markdown-content :deep(pre) {

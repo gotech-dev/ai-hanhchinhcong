@@ -466,6 +466,53 @@ class AdminController extends Controller
                 $originalExtension = strtolower($file->getClientOriginalExtension());
                 $fileName = $file->getClientOriginalName();
                 
+                // ✅ MỚI: AUTO-CONVERT PDF to DOCX using Aspose.Words API
+                if ($originalExtension === 'pdf') {
+                    Log::info('📄 [AdminController] Converting PDF to DOCX using Aspose.Words API', [
+                        'original_file' => $fileName,
+                    ]);
+                    
+                    try {
+                        $asposeConverter = app(\App\Services\AsposeWordsConverter::class);
+                        
+                        if ($asposeConverter->isConfigured()) {
+                            // Convert PDF → DOCX
+                            $docxPath = $asposeConverter->convertPdfToDocx($file);
+                            
+                            if ($docxPath && file_exists($docxPath)) {
+                                // Create UploadedFile from converted DOCX
+                                $file = new \Illuminate\Http\UploadedFile(
+                                    $docxPath,
+                                    pathinfo($fileName, PATHINFO_FILENAME) . '.docx',
+                                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                                    null,
+                                    true // test mode = true (allow temp files)
+                                );
+                                
+                                $fileName = pathinfo($fileName, PATHINFO_FILENAME) . '.docx';
+                                
+                                Log::info('✅ [AdminController] Successfully converted PDF to DOCX', [
+                                    'original_file' => $fileName,
+                                    'new_file' => $fileName,
+                                ]);
+                            } else {
+                                throw new \Exception('Converted DOCX file not found');
+                            }
+                        } else {
+                            throw new \Exception('Aspose.Words API is not configured. Please set ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET in .env file.');
+                        }
+                    } catch (\Exception $e) {
+                        Log::error('🔴 [AdminController] PDF to DOCX conversion failed', [
+                            'file' => $fileName,
+                            'error' => $e->getMessage(),
+                            'trace' => $e->getTraceAsString(),
+                        ]);
+                        
+                        // Re-throw exception - don't continue with PDF file
+                        throw new \Exception("Failed to convert PDF to DOCX: " . $e->getMessage());
+                    }
+                }
+                
                 // ✅ AUTO-CONVERT .doc to .docx
                 if ($originalExtension === 'doc') {
                     Log::info('🔄 [AdminController] Converting .doc to .docx', [
@@ -509,6 +556,15 @@ class AdminController extends Controller
                 // ✅ NEW: Auto-generate placeholders if not exists (if DOCX)
                 $metadata = [];
                 $finalExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+                
+                // ✅ MỚI: Nếu đã convert từ PDF → DOCX, đảm bảo file_type là 'docx'
+                if ($originalExtension === 'pdf' && $finalExtension === 'docx') {
+                    Log::info('✅ [AdminController] File type updated from PDF to DOCX after conversion', [
+                        'original' => $originalExtension,
+                        'final' => $finalExtension,
+                    ]);
+                }
+                
                 if ($finalExtension === 'docx') {
                     try {
                         // Resolve TemplatePlaceholderGenerator service
@@ -562,6 +618,49 @@ class AdminController extends Controller
                     }
                 }
                 
+                // ✅ MỚI: Convert template to HTML và lưu vào metadata (chỉ cho document_drafting và report_generator)
+                $htmlPreview = null;
+                if (in_array($assistant->assistant_type, ['document_drafting', 'report_generator'])) {
+                    try {
+                        $asposeConverter = app(\App\Services\AsposeWordsConverter::class);
+                        
+                        if ($asposeConverter->isConfigured()) {
+                            Log::info('🔵 [AdminController] Converting template to HTML for preview', [
+                                'assistant_type' => $assistant->assistant_type,
+                                'file_type' => $finalExtension,
+                                'file_name' => $fileName,
+                            ]);
+                            
+                            // Convert PDF/DOCX → HTML
+                            if ($finalExtension === 'pdf') {
+                                // Convert PDF → HTML
+                                $htmlPreview = $asposeConverter->convertPdfToHtml($fullPath);
+                            } elseif ($finalExtension === 'docx') {
+                                // Convert DOCX → HTML
+                                $htmlPreview = $asposeConverter->convertDocxToHtml($fullPath);
+                            }
+                            
+                            if ($htmlPreview) {
+                                $metadata['html_preview'] = $htmlPreview;
+                                Log::info('✅ [AdminController] Template HTML preview saved to metadata', [
+                                    'html_length' => strlen($htmlPreview),
+                                    'file_name' => $fileName,
+                                ]);
+                            }
+                        } else {
+                            Log::warning('⚠️ [AdminController] Aspose API not configured, skipping HTML preview generation', [
+                                'file_name' => $fileName,
+                            ]);
+                        }
+                    } catch (\Exception $e) {
+                        Log::warning('⚠️ [AdminController] Failed to generate HTML preview, continuing without it', [
+                            'file_name' => $fileName,
+                            'error' => $e->getMessage(),
+                        ]);
+                        // Continue without HTML preview - không block việc tạo template
+                    }
+                }
+                
                 // Create document template record
                 \App\Models\DocumentTemplate::create([
                     'ai_assistant_id' => $assistant->id,
@@ -581,6 +680,7 @@ class AdminController extends Controller
                     'file_name' => $fileName,
                     'document_type' => $documentType,
                     'template_subtype' => $templateSubtype,
+                    'has_html_preview' => !empty($htmlPreview),
                 ]);
                 
             } catch (\Exception $e) {

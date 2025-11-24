@@ -134,7 +134,27 @@ class IntentRecognizer
         
         $basePrompt .= "**THÔNG TIN TRỢ LÝ:**\n";
         $basePrompt .= "- Tên: {$assistantName}\n";
-        $basePrompt .= "- Loại: {$assistantType}\n\n";
+        $basePrompt .= "- Loại: {$assistantType}\n";
+        
+        // ✅ MỚI: Thêm thông tin template từ database để AI biết assistant có template gì
+        if ($assistantType === 'document_drafting' && isset($context['assistant'])) {
+            $assistant = $context['assistant'];
+            $templates = \App\Models\DocumentTemplate::where('ai_assistant_id', $assistant->id)
+                ->where('is_active', true)
+                ->get();
+            
+            if ($templates->count() > 0) {
+                $basePrompt .= "- Templates có sẵn: " . $templates->count() . " template(s)\n";
+                foreach ($templates as $template) {
+                    $basePrompt .= "  + Template: \"{$template->name}\" - Loại: {$template->document_type}\n";
+                }
+                $basePrompt .= "\n";
+                $basePrompt .= "**QUAN TRỌNG:** Nếu assistant có template, ưu tiên detect document_type theo template có sẵn.\n";
+                $basePrompt .= "Ví dụ: Nếu assistant chỉ có template \"Công văn\" (cong_van), thì user message \"Tạo văn bản góp ý\" nên detect là \"cong_van\" chứ không phải \"thong_bao\".\n\n";
+            }
+        }
+        
+        $basePrompt .= "\n";
         
         // Note: report_generator has been merged into document_drafting
         if ($assistantType === 'qa_based_document') {

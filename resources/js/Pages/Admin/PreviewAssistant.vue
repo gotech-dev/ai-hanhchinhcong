@@ -178,6 +178,110 @@
                                 <div v-else class="mt-3">
                                     <p class="text-xs text-gray-500 italic">Không có placeholders</p>
                                 </div>
+                                
+                                <!-- ✅ MỚI: Edit HTML Preview Button -->
+                                <div class="mt-3 flex gap-2">
+                                    <button
+                                        @click="openEditHtmlModal(template)"
+                                        class="px-3 py-1.5 text-xs bg-green-500 text-white rounded hover:bg-green-600 transition-colors flex items-center gap-1"
+                                    >
+                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                        </svg>
+                                        Edit HTML
+                                    </button>
+                                    <button
+                                        @click="previewTemplateHtml(template)"
+                                        class="px-3 py-1.5 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors flex items-center gap-1"
+                                    >
+                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                        </svg>
+                                        Preview
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- ✅ MỚI: Edit HTML Modal -->
+                <div
+                    v-if="showEditHtmlModal"
+                    class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+                    @click.self="closeEditHtmlModal"
+                >
+                    <div class="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col">
+                        <!-- Modal Header -->
+                        <div class="flex items-center justify-between p-4 border-b border-gray-200">
+                            <h3 class="text-lg font-semibold text-gray-900">
+                                Edit HTML Preview - {{ editingTemplate?.name }}
+                            </h3>
+                            <button
+                                @click="closeEditHtmlModal"
+                                class="text-gray-400 hover:text-gray-600 transition-colors"
+                            >
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        
+                        <!-- Modal Content -->
+                        <div class="flex-1 overflow-hidden flex">
+                            <!-- Left: HTML Editor -->
+                            <div class="flex-1 flex flex-col border-r border-gray-200">
+                                <div class="p-2 bg-gray-50 border-b border-gray-200">
+                                    <span class="text-sm font-medium text-gray-700">HTML Code</span>
+                                </div>
+                                <textarea
+                                    v-model="editingHtml"
+                                    class="flex-1 p-4 font-mono text-sm border-0 resize-none focus:outline-none focus:ring-0"
+                                    placeholder="HTML content will appear here..."
+                                    spellcheck="false"
+                                ></textarea>
+                            </div>
+                            
+                            <!-- Right: Preview -->
+                            <div class="flex-1 flex flex-col">
+                                <div class="p-2 bg-gray-50 border-b border-gray-200">
+                                    <span class="text-sm font-medium text-gray-700">Preview</span>
+                                </div>
+                                <div class="flex-1 overflow-auto p-4 bg-gray-50">
+                                    <div
+                                        v-if="editingHtml"
+                                        class="bg-white p-4 rounded shadow-sm min-h-full"
+                                        v-html="editingHtml"
+                                    ></div>
+                                    <div v-else class="text-gray-400 text-center py-12">
+                                        HTML preview will appear here...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Modal Footer -->
+                        <div class="flex items-center justify-between p-4 border-t border-gray-200 bg-gray-50">
+                            <div class="text-sm text-gray-600">
+                                <span v-if="editingHtml">Length: {{ editingHtml.length }} characters</span>
+                            </div>
+                            <div class="flex gap-2">
+                                <button
+                                    @click="closeEditHtmlModal"
+                                    class="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    @click="saveHtmlPreview"
+                                    :disabled="!editingHtml || isSavingHtml"
+                                    class="px-4 py-2 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                                >
+                                    <span v-if="isSavingHtml" class="inline-block animate-spin">⏳</span>
+                                    <span v-else>💾</span>
+                                    {{ isSavingHtml ? 'Saving...' : 'Save HTML' }}
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -315,6 +419,12 @@ const messagesContainer = ref(null);
 const testSessionId = ref(null);
 const useStreaming = ref(true); // Enable streaming by default
 const { streamResponse } = useChatStream();
+
+// ✅ MỚI: HTML Editing state
+const showEditHtmlModal = ref(false);
+const editingTemplate = ref(null);
+const editingHtml = ref('');
+const isSavingHtml = ref(false);
 
 // Smart suggestions based on assistant type
 const getSuggestions = () => {
@@ -504,6 +614,88 @@ onMounted(async () => {
     }
     scrollToBottom();
 });
+
+// ✅ MỚI: HTML Editing methods
+const openEditHtmlModal = async (template) => {
+    editingTemplate.value = template;
+    showEditHtmlModal.value = true;
+    
+    // Load HTML preview from API or metadata
+    try {
+        if (template.metadata?.html_preview) {
+            // Use HTML from metadata if available
+            editingHtml.value = template.metadata.html_preview;
+        } else {
+            // Try to load from API
+            const response = await window.axios.get(`/api/templates/${template.id}/preview-html`, {
+                responseType: 'text'
+            });
+            // response.data is already a string when responseType is 'text'
+            editingHtml.value = response.data;
+        }
+    } catch (error) {
+        console.error('Error loading HTML preview:', error);
+        if (error.response?.status === 404) {
+            alert('HTML preview chưa được tạo. Vui lòng upload lại template để tự động generate HTML.');
+        } else {
+            alert('Không thể load HTML preview. Vui lòng thử lại.');
+        }
+        editingHtml.value = '';
+    }
+};
+
+const closeEditHtmlModal = () => {
+    showEditHtmlModal.value = false;
+    editingTemplate.value = null;
+    editingHtml.value = '';
+};
+
+const previewTemplateHtml = async (template) => {
+    try {
+        const response = await window.axios.get(`/api/templates/${template.id}/preview-html`, {
+            responseType: 'text'
+        });
+        
+        // Open preview in new window
+        const newWindow = window.open('', '_blank');
+        // response.data is already a string when responseType is 'text'
+        newWindow.document.write(response.data);
+        newWindow.document.close();
+    } catch (error) {
+        console.error('Error previewing HTML:', error);
+        if (error.response?.status === 404) {
+            alert('HTML preview chưa được tạo. Vui lòng upload lại template để tự động generate HTML.');
+        } else {
+            alert('Không thể preview HTML. Vui lòng thử lại.');
+        }
+    }
+};
+
+const saveHtmlPreview = async () => {
+    if (!editingTemplate.value || !editingHtml.value.trim()) {
+        alert('HTML không được để trống.');
+        return;
+    }
+    
+    isSavingHtml.value = true;
+    
+    try {
+        await window.axios.put(`/api/templates/${editingTemplate.value.id}/html-preview`, {
+            html_preview: editingHtml.value
+        });
+        
+        alert('HTML preview đã được lưu thành công!');
+        closeEditHtmlModal();
+        
+        // Reload page to reflect changes
+        router.reload();
+    } catch (error) {
+        console.error('Error saving HTML preview:', error);
+        alert('Không thể lưu HTML preview. Vui lòng thử lại.');
+    } finally {
+        isSavingHtml.value = false;
+    }
+};
 </script>
 
 <style scoped>

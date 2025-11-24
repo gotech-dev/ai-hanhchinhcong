@@ -20,7 +20,8 @@ class DocumentDraftingService
 {
     public function __construct(
         protected ?DocumentFormatChecker $formatChecker = null,
-        protected ?DocumentProcessor $documentProcessor = null
+        protected ?DocumentProcessor $documentProcessor = null,
+        protected ?PdfTemplateProcessor $pdfTemplateProcessor = null
     ) {
         // Lazy load DocumentFormatChecker if exists
         if (class_exists('App\Services\DocumentFormatChecker')) {
@@ -29,6 +30,10 @@ class DocumentDraftingService
         // Lazy load DocumentProcessor if not provided
         if (!$this->documentProcessor) {
             $this->documentProcessor = app(DocumentProcessor::class);
+        }
+        // ✅ MỚI: Lazy load PdfTemplateProcessor (chỉ dùng cho PDF templates)
+        if (!$this->pdfTemplateProcessor) {
+            $this->pdfTemplateProcessor = app(PdfTemplateProcessor::class);
         }
     }
     
@@ -209,6 +214,26 @@ class DocumentDraftingService
      */
     protected function findTemplate(AiAssistant $assistant, DocumentType $documentType, ?string $subtype = null): ?DocumentTemplate
     {
+        // ✅ DEBUG: Log all templates for this assistant
+        $allTemplates = DocumentTemplate::where('ai_assistant_id', $assistant->id)
+            ->where('is_active', true)
+            ->get();
+        
+        Log::info('🔵 [DocumentDrafting] Finding template - All templates for assistant', [
+            'assistant_id' => $assistant->id,
+            'assistant_name' => $assistant->name,
+            'document_type' => $documentType->value,
+            'subtype' => $subtype,
+            'all_templates_count' => $allTemplates->count(),
+            'all_templates' => $allTemplates->map(fn($t) => [
+                'id' => $t->id,
+                'name' => $t->name,
+                'document_type' => $t->document_type,
+                'subtype' => $t->template_subtype,
+                'is_active' => $t->is_active,
+            ])->toArray(),
+        ]);
+        
         $query = DocumentTemplate::where('ai_assistant_id', $assistant->id)
             ->where('document_type', $documentType->value)
             ->where('is_active', true);
@@ -226,6 +251,53 @@ class DocumentDraftingService
                 ->whereNull('template_subtype')
                 ->where('is_active', true)
                 ->first();
+        }
+        
+        // ✅ FIX: Fallback - Nếu không tìm thấy template match document_type, dùng template đầu tiên của assistant
+        // (Useful khi assistant chỉ có 1 template nhưng AI detect sai document_type hoặc user message không rõ ràng)
+        if (!$template && $allTemplates->count() > 0) {
+            // ✅ Ưu tiên: Nếu assistant chỉ có 1 template, dùng template đó
+            if ($allTemplates->count() === 1) {
+                $template = $allTemplates->first();
+                Log::info('⚠️ [DocumentDrafting] Assistant has only 1 template, using it regardless of detected document_type', [
+                    'assistant_id' => $assistant->id,
+                    'detected_document_type' => $documentType->value,
+                    'template_id' => $template->id,
+                    'template_name' => $template->name,
+                    'template_document_type' => $template->document_type,
+                    'reason' => 'Single template assistant - using available template',
+                ]);
+            } else {
+                // Nếu có nhiều templates, vẫn dùng template đầu tiên như fallback
+                $template = $allTemplates->first();
+                Log::info('⚠️ [DocumentDrafting] No exact template match, using first available template as fallback', [
+                    'assistant_id' => $assistant->id,
+                    'requested_document_type' => $documentType->value,
+                    'fallback_template_id' => $template->id,
+                    'fallback_template_name' => $template->name,
+                    'fallback_template_document_type' => $template->document_type,
+                ]);
+            }
+        }
+        
+        // ✅ DEBUG: Log template found
+        if ($template) {
+            Log::info('✅ [DocumentDrafting] Template found', [
+                'template_id' => $template->id,
+                'template_name' => $template->name,
+                'template_file_path' => $template->file_path,
+                'template_document_type' => $template->document_type,
+                'requested_document_type' => $documentType->value,
+                'subtype' => $template->template_subtype,
+                'is_fallback' => $template->document_type !== $documentType->value,
+            ]);
+        } else {
+            Log::warning('⚠️ [DocumentDrafting] No template found', [
+                'assistant_id' => $assistant->id,
+                'document_type' => $documentType->value,
+                'subtype' => $subtype,
+                'total_templates' => $allTemplates->count(),
+            ]);
         }
         
         return $template;
@@ -252,7 +324,7 @@ class DocumentDraftingService
     }
     
     /**
-     * Generate DOCX from template file (using TemplateProcessor)
+     * Generate DOCX from template file (using TemplateProcessor for DOCX, or code generation for PDF)
      */
     protected function generateDocxFromTemplate(DocumentTemplate $template, array $documentData, ChatSession $session): string
     {
@@ -273,12 +345,51 @@ class DocumentDraftingService
                 );
             }
             
-            // ✅ FIX: Check if file is .doc (old format) - TemplateProcessor only supports .docx
+            // ✅ FIX: Check file_type from database (not just extension)
+            $fileType = strtolower($template->file_type ?? '');
             $fileExtension = strtolower(pathinfo($templatePath, PATHINFO_EXTENSION));
-            if ($fileExtension === 'doc') {
+            
+            // ✅ MỚI: PDF files - use PdfTemplateProcessor (service riêng, không ảnh hưởng DOCX)
+            if ($fileType === 'pdf' || $fileExtension === 'pdf') {
+                Log::info('📄 [DocumentDrafting] Template file is PDF, using PdfTemplateProcessor', [
+                    'template_id' => $template->id,
+                    'file_path' => $templatePath,
+                    'file_type' => $fileType,
+                    'file_extension' => $fileExtension,
+                    'method' => 'PdfTemplateProcessor (PDF→DOCX conversion)',
+                    'expected_format_preservation' => '95-98%',
+                ]);
+                
+                try {
+                    // ✅ MỚI: Dùng PdfTemplateProcessor service riêng
+                    // Service này handle tất cả logic PDF (convert, extract, fill)
+                    // KHÔNG ảnh hưởng đến logic DOCX ở dưới
+                    return $this->pdfTemplateProcessor->generateDocxFromPdfTemplate(
+                        $template,
+                        $documentData,
+                        $session
+                    );
+                } catch (\Exception $e) {
+                    Log::error('🔴 [DocumentDrafting] PdfTemplateProcessor failed, falling back to code generation', [
+                        'template_id' => $template->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                    
+                    // Fallback to code generation if PDF processing fails
+                    return $this->generateDocx(
+                        \App\Enums\DocumentType::from($template->document_type),
+                        $documentData,
+                        $session
+                    );
+                }
+            }
+            
+            // ✅ FIX: Check if file is .doc (old format) - TemplateProcessor only supports .docx
+            if ($fileType === 'doc' || $fileExtension === 'doc') {
                 Log::warning('⚠️ [DocumentDrafting] Template file is .doc format, TemplateProcessor only supports .docx. Falling back to code generation', [
                     'template_id' => $template->id,
                     'file_path' => $templatePath,
+                    'file_type' => $fileType,
                     'file_extension' => $fileExtension,
                 ]);
                 // Fallback to code generation
@@ -289,16 +400,17 @@ class DocumentDraftingService
                 );
             }
             
-            // ✅ LOG: Using template file
-            Log::info('🔵 [DocumentDrafting] Using template file for DOCX generation', [
+            // ✅ LOG: Using template file (must be DOCX at this point)
+            Log::info('🔵 [DocumentDrafting] Using DOCX template file for DOCX generation', [
                 'template_id' => $template->id,
                 'template_path' => $templatePath,
+                'file_type' => $fileType,
                 'file_extension' => $fileExtension,
                 'file_exists' => file_exists($templatePath),
                 'file_size' => file_exists($templatePath) ? filesize($templatePath) : 0,
             ]);
             
-            // Create TemplateProcessor
+            // Create TemplateProcessor (only for DOCX files)
             $templateProcessor = new TemplateProcessor($templatePath);
             
             // Get placeholders from template

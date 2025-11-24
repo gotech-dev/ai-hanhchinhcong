@@ -497,7 +497,7 @@ class SmartAssistantEngine
             ]);
             
             // Detect document type from user request
-            $documentType = $this->detectDocumentType($userMessage, $intent);
+            $documentType = $this->detectDocumentType($userMessage, $intent, $assistant);
             
             if (!$documentType) {
                 Log::info('Document type not detected, asking user', [
@@ -643,15 +643,65 @@ class SmartAssistantEngine
     /**
      * Detect document type from user request
      */
-    protected function detectDocumentType(string $userMessage, array $intent): ?\App\Enums\DocumentType
+    protected function detectDocumentType(string $userMessage, array $intent, ?\App\Models\AiAssistant $assistant = null): ?\App\Enums\DocumentType
     {
         $message = strtolower($userMessage);
+        
+        // ✅ MỚI: Nếu assistant có template, ưu tiên dùng document_type của template
+        if ($assistant) {
+            $templates = \App\Models\DocumentTemplate::where('ai_assistant_id', $assistant->id)
+                ->where('is_active', true)
+                ->get();
+            
+            // Nếu assistant chỉ có 1 template, ưu tiên dùng document_type của template đó
+            if ($templates->count() === 1) {
+                $template = $templates->first();
+                try {
+                    $templateDocType = \App\Enums\DocumentType::from($template->document_type);
+                    Log::info('✅ [SmartAssistantEngine] Using template document_type (single template assistant)', [
+                        'assistant_id' => $assistant->id,
+                        'template_id' => $template->id,
+                        'template_document_type' => $template->document_type,
+                        'user_message' => substr($userMessage, 0, 100),
+                    ]);
+                    return $templateDocType;
+                } catch (\ValueError $e) {
+                    // Invalid type, continue to normal detection
+                }
+            }
+        }
         
         // Check intent entity first
         if (isset($intent['entity']['document_type'])) {
             $type = $intent['entity']['document_type'];
             try {
-                return \App\Enums\DocumentType::from($type);
+                $detectedType = \App\Enums\DocumentType::from($type);
+                
+                // ✅ MỚI: Nếu assistant có template, verify detected type matches template
+                if ($assistant && $templates->count() > 0) {
+                    $hasMatchingTemplate = $templates->contains(function ($t) use ($type) {
+                        return $t->document_type === $type;
+                    });
+                    
+                    if (!$hasMatchingTemplate && $templates->count() === 1) {
+                        // AI detect sai, dùng template document_type thay thế
+                        $template = $templates->first();
+                        try {
+                            $templateDocType = \App\Enums\DocumentType::from($template->document_type);
+                            Log::warning('⚠️ [SmartAssistantEngine] AI detected wrong document_type, using template document_type instead', [
+                                'assistant_id' => $assistant->id,
+                                'ai_detected' => $type,
+                                'template_document_type' => $template->document_type,
+                                'user_message' => substr($userMessage, 0, 100),
+                            ]);
+                            return $templateDocType;
+                        } catch (\ValueError $e) {
+                            // Invalid type, use AI detected
+                        }
+                    }
+                }
+                
+                return $detectedType;
             } catch (\ValueError $e) {
                 // Invalid type, continue to keyword detection
             }

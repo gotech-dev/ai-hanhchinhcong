@@ -3,6 +3,34 @@
         <div class="flex items-center justify-between mb-4">
             <h3 class="text-lg font-semibold text-gray-900">📄 Văn Bản</h3>
             <div class="flex gap-2">
+                <!-- ✅ MỚI: Edit HTML button -->
+                <button
+                    v-if="normalizedMessageId && docxPreviewHtml"
+                    @click="toggleEditMode"
+                    :disabled="isGenerating || isSaving"
+                    class="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
+                    :title="isEditMode ? 'Thoát chế độ chỉnh sửa' : 'Chỉnh sửa HTML trực tiếp trên web'"
+                >
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    {{ isEditMode ? 'Thoát' : 'Sửa' }}
+                </button>
+                
+                <!-- Save button (only show in edit mode) -->
+                <button
+                    v-if="isEditMode"
+                    @click="saveEditedHtml"
+                    :disabled="isSaving"
+                    class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm hover:shadow-md"
+                    title="Lưu HTML đã chỉnh sửa"
+                >
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    {{ isSaving ? 'Đang lưu...' : 'Lưu' }}
+                </button>
+                
                 <!-- Download DOCX button -->
                 <button
                     v-if="normalizedMessageId"
@@ -19,8 +47,22 @@
             </div>
         </div>
         
-        <!-- Hiển thị DOCX preview nếu có -->
-        <div v-if="docxPreviewHtml && !isGenerating" class="document-content docx-preview" v-html="docxPreviewHtml"></div>
+        <!-- ✅ FIX: Tách 2 div riêng để tránh v-html re-render khi edit -->
+        <!-- View mode: Dùng v-html -->
+        <div 
+            v-if="!isEditMode && docxPreviewHtml && !isGenerating" 
+            class="document-content docx-preview"
+            v-html="docxPreviewHtml"
+        ></div>
+        
+        <!-- Edit mode: Không dùng v-html, chỉ set innerHTML một lần -->
+        <div 
+            v-if="isEditMode"
+            ref="editableContent"
+            class="document-content docx-preview edit-mode"
+            contenteditable="true"
+            @input="onHtmlEdit"
+        ></div>
         
         <!-- Fallback: Hiển thị markdown với styling đẹp hơn nếu chưa có DOCX -->
         <div v-else-if="!isGenerating && documentContent" class="document-content markdown-fallback" v-html="formattedContent"></div>
@@ -43,7 +85,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, nextTick } from 'vue';
 import { marked } from 'marked';
 
 const props = defineProps({
@@ -54,6 +96,10 @@ const props = defineProps({
 
 const docxPreviewHtml = ref('');
 const isGenerating = ref(false);
+const isEditMode = ref(false);
+const isSaving = ref(false);
+const editableContent = ref(null);
+const originalHtml = ref(''); // Store original HTML before editing
 
 // Normalize messageId to ensure it's always available
 const normalizedMessageId = computed(() => {
@@ -186,6 +232,8 @@ const loadHtmlPreview = async () => {
         
         // Set cleaned HTML (style tags and header tags removed to prevent CSS override)
         docxPreviewHtml.value = cleanedHtml;
+        // Save original HTML for edit mode
+        originalHtml.value = cleanedHtml;
         
         // ✅ LOG: After setting v-html, check actual DOM
         setTimeout(() => {
@@ -299,6 +347,98 @@ const downloadDocument = async (format) => {
     }
 };
 
+// ✅ MỚI: Toggle edit mode
+const toggleEditMode = () => {
+    if (isEditMode.value) {
+        // Exit edit mode - restore original HTML
+        if (confirm('Bạn có muốn hủy các thay đổi chưa lưu?')) {
+            isEditMode.value = false;
+        }
+    } else {
+        // Enter edit mode - save original HTML
+        originalHtml.value = docxPreviewHtml.value;
+        isEditMode.value = true;
+        
+        // ✅ FIX: Set innerHTML trực tiếp (không dùng v-html để tránh re-render)
+        nextTick(() => {
+            if (editableContent.value) {
+                editableContent.value.innerHTML = originalHtml.value;
+                editableContent.value.focus();
+                
+                // Set cursor to end of content
+                const range = document.createRange();
+                const selection = window.getSelection();
+                range.selectNodeContents(editableContent.value);
+                range.collapse(false); // false = collapse to end
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+        });
+    }
+};
+
+// ✅ MỚI: Handle HTML edit input
+// ✅ FIX: Không update docxPreviewHtml.value để tránh Vue re-render và mất cursor position
+const onHtmlEdit = (event) => {
+    // Chỉ log để debug, không update reactive value
+    // HTML sẽ được lấy từ element khi save
+    console.log('[DocumentPreview] HTML edited', {
+        length: event.target.innerHTML.length,
+    });
+};
+
+// ✅ MỚI: Save edited HTML
+const saveEditedHtml = async () => {
+    if (!normalizedMessageId.value) {
+        alert('Không tìm thấy ID message. Vui lòng thử lại sau.');
+        return;
+    }
+    
+    if (!editableContent.value) {
+        alert('Không tìm thấy nội dung để lưu.');
+        return;
+    }
+    
+    isSaving.value = true;
+    
+    try {
+        // ✅ FIX: Lấy HTML từ element (không từ reactive value)
+        const editedHtml = editableContent.value.innerHTML;
+        
+        // Call API to save edited HTML
+        const response = await fetch(`/api/documents/${normalizedMessageId.value}/html-preview`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+            },
+            body: JSON.stringify({
+                html_preview: editedHtml
+            }),
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to save HTML preview');
+        }
+        
+        // ✅ FIX: Update reactive values sau khi save thành công
+        originalHtml.value = editedHtml;
+        docxPreviewHtml.value = editedHtml;
+        
+        // Exit edit mode
+        isEditMode.value = false;
+        
+        alert('HTML đã được lưu thành công!');
+        
+    } catch (error) {
+        console.error('Failed to save HTML:', error);
+        alert(`Không thể lưu HTML. ${error.message || 'Vui lòng thử lại.'}`);
+    } finally {
+        isSaving.value = false;
+    }
+};
+
 onMounted(async () => {
     // ✅ LOG: Component mounted
     console.log('[DocumentPreview] Component mounted', {
@@ -357,6 +497,19 @@ onMounted(async () => {
     border-radius: 4px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     box-sizing: border-box;
+}
+
+/* ✅ MỚI: Edit mode styling */
+.docx-preview.edit-mode {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+    background: #f8fafc;
+    min-height: 200px;
+}
+
+.docx-preview.edit-mode:focus {
+    outline: 2px solid #2563eb;
+    background: white;
 }
 
 /* ✅ FIX: Preserve superscript/subscript formatting */
