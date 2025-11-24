@@ -13,13 +13,13 @@
             </div>
 
             <!-- Assistants List -->
-            <div v-if="assistants.length === 0" class="text-center py-12 bg-white rounded-lg">
+            <div v-if="assistants.data.length === 0" class="text-center py-12 bg-white rounded-lg">
                 <p class="text-gray-600">Chưa có assistant nào.</p>
             </div>
 
             <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 <div
-                    v-for="assistant in assistants"
+                    v-for="assistant in assistants.data"
                     :key="assistant.id"
                     class="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow"
                 >
@@ -58,6 +58,29 @@
                 </div>
             </div>
 
+            <!-- Pagination -->
+            <div v-if="assistants.last_page > 1" class="flex justify-center items-center space-x-4 mt-6">
+                <Link
+                    v-if="assistants.current_page > 1"
+                    :href="assistants.prev_page_url"
+                    class="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300 text-sm font-medium text-gray-700"
+                >
+                    ← Previous
+                </Link>
+                
+                <span class="text-gray-600 text-sm">
+                    Page {{ assistants.current_page }} of {{ assistants.last_page }}
+                </span>
+                
+                <Link
+                    v-if="assistants.current_page < assistants.last_page"
+                    :href="assistants.next_page_url"
+                    class="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300 text-sm font-medium text-gray-700"
+                >
+                    Next →
+                </Link>
+            </div>
+
         </div>
     </AdminLayout>
 </template>
@@ -70,7 +93,7 @@ import axios from 'axios';
 
 const props = defineProps({
     auth: Object,
-    assistants: Array,
+    assistants: Object,
 });
 
 

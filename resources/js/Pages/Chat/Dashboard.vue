@@ -311,9 +311,24 @@
                     Chưa có assistant nào
                 </div>
 
-                <div v-else class="space-y-2 max-h-96 overflow-y-auto">
+                <div v-else>
+                    <!-- Search Box -->
+                    <input
+                        v-model="assistantSearchQuery"
+                        type="text"
+                        placeholder="🔍 Tìm kiếm trợ lý..."
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                    
+                    <!-- Results count -->
+                    <div v-if="assistantSearchQuery" class="text-sm text-gray-600 mb-2">
+                        Tìm thấy {{ filteredAssistants.length }} trợ lý
+                    </div>
+                    
+                    <!-- Assistants List -->
+                    <div class="space-y-2 max-h-96 overflow-y-auto">
                     <div
-                        v-for="assistant in assistants"
+                        v-for="assistant in filteredAssistants"
                         :key="assistant.id"
                         @click="startNewChat(assistant.id)"
                         class="p-4 border border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 cursor-pointer transition-colors"
@@ -339,6 +354,12 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+                    
+                    <!-- No results -->
+                    <div v-if="filteredAssistants.length === 0" class="text-center py-8 text-gray-500">
+                        Không tìm thấy trợ lý phù hợp
+                    </div>
                     </div>
                 </div>
 
@@ -385,12 +406,24 @@ const useStreaming = ref(true);
 const { streamResponse } = useChatStream();
 const attachedFiles = ref([]);
 const fileInput = ref(null);
+const assistantSearchQuery = ref('');
 
 if (currentSession.value) {
     currentSessionId.value = currentSession.value.id;
     currentAssistant.value = currentSession.value.ai_assistant;
     messages.value = currentSession.value.messages || [];
 }
+
+const filteredAssistants = computed(() => {
+    if (!assistantSearchQuery.value) return assistants.value;
+    
+    const query = assistantSearchQuery.value.toLowerCase();
+    return assistants.value.filter(a => 
+        a.name.toLowerCase().includes(query) ||
+        (a.description && a.description.toLowerCase().includes(query)) ||
+        (a.assistant_type && a.assistant_type.toLowerCase().includes(query))
+    );
+});
 
 const getLatestMessageContent = (session) => {
     if (!session) return 'Chưa có tin nhắn';
@@ -458,8 +491,20 @@ const scrollToBottom = () => {
 const loadAssistants = async () => {
     assistantsLoading.value = true;
     try {
-        const response = await axios.get('/api/assistants');
-        assistants.value = response.data.assistants.data || response.data.assistants || [];
+        // Load all assistants for better UX in modal (with backend safety limit)
+        const response = await axios.get('/api/assistants?all=true');
+        
+        // Handle both array (all) and paginated response
+        if (Array.isArray(response.data.assistants)) {
+            assistants.value = response.data.assistants;
+        } else {
+            assistants.value = response.data.assistants.data || response.data.assistants || [];
+        }
+        
+        // Log strategy used
+        if (response.data.strategy === 'paginated') {
+            console.warn('[loadAssistants] Too many assistants, using pagination');
+        }
     } catch (error) {
         console.error('Error loading assistants:', error);
     } finally {

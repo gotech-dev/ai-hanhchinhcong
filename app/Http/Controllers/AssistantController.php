@@ -29,11 +29,42 @@ class AssistantController extends Controller
             $query->where('name', 'like', '%' . $request->input('search') . '%');
         }
         
+        // Support loading all assistants (with safety limit)
+        if ($request->boolean('all')) {
+            $total = $query->count();
+            
+            // Log warning if approaching limit
+            if ($total > 150) {
+                \Log::warning('Large number of assistants being loaded', [
+                    'total' => $total,
+                    'user_agent' => $request->userAgent(),
+                ]);
+            }
+            
+            // Safety limit: max 200 assistants for "load all"
+            if ($total > 200) {
+                return response()->json([
+                    'assistants' => $query->orderBy('created_at', 'desc')->paginate(20),
+                    'message' => 'Too many assistants. Using pagination instead.',
+                    'strategy' => 'paginated',
+                ]);
+            }
+            
+            $assistants = $query->orderBy('created_at', 'desc')->get();
+            
+            return response()->json([
+                'assistants' => $assistants,
+                'strategy' => 'all',
+                'total' => $total,
+            ]);
+        }
+        
         $assistants = $query->orderBy('created_at', 'desc')
             ->paginate(20);
         
         return response()->json([
             'assistants' => $assistants,
+            'strategy' => 'paginated',
         ]);
     }
 

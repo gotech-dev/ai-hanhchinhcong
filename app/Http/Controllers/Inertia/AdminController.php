@@ -18,7 +18,7 @@ class AdminController extends Controller
         $assistants = AiAssistant::where('admin_id', $user->id)
             ->withCount(['chatSessions', 'documents'])
             ->orderBy('created_at', 'desc')
-            ->get();
+            ->paginate(20);
         
         return Inertia::render('Admin/Assistants', [
             'assistants' => $assistants,
