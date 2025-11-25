@@ -68,20 +68,44 @@ class ChatController extends Controller
         }, 'aiAssistant']);
         
         // Get expected greeting message from assistant
-        // Special handling for document_drafting assistant: include template list
+        // Special handling for document_drafting and report_assistant: include template list
         $greetingMetadata = null;
-        if ($assistant->getAssistantTypeValue() === 'document_drafting') {
+        $assistantType = $assistant->getAssistantTypeValue();
+        
+        if ($assistantType === 'document_drafting' || $assistantType === 'report_assistant') {
             $templates = $assistant->documentTemplates()
                 ->where('is_active', true)
                 ->orderBy('name')
                 ->get();
             
+            \Log::info('🔵 [ChatController] Checking templates for greeting', [
+                'assistant_id' => $assistant->id,
+                'assistant_type' => $assistantType,
+                'templates_count' => $templates->count(),
+                'templates' => $templates->map(function ($t) {
+                    return [
+                        'id' => $t->id,
+                        'name' => $t->name,
+                        'has_html_preview' => !empty($t->metadata['html_preview']),
+                        'html_preview_length' => isset($t->metadata['html_preview']) ? strlen($t->metadata['html_preview']) : 0,
+                    ];
+                })->toArray(),
+            ]);
+            
             if ($templates->isNotEmpty()) {
                 $templateNames = $templates->pluck('name')->toArray();
                 $templateList = implode(', ', $templateNames);
-                $expectedGreetingMessage = "Xin chào bạn. Mình là {$assistant->name}. Mình có thể giúp bạn tạo nhanh các văn bản mẫu.";
                 
-                // ✅ MỚI: Thêm template info vào metadata để frontend render button
+                if ($assistantType === 'document_drafting') {
+                    $expectedGreetingMessage = "Xin chào bạn. Mình là {$assistant->name}. Mình có thể giúp bạn tạo nhanh các văn bản mẫu.";
+                } else {
+                    // report_assistant
+                    $expectedGreetingMessage = "Xin chào bạn. Mình là {$assistant->name}. Mình có thể giúp bạn tạo nhanh các mẫu báo cáo.";
+                }
+                
+                // ✅ MỚI: Thêm template info vào metadata để frontend render button (giống document_drafting)
+                $primaryTemplate = $templates->count() === 1 ? $templates->first() : null;
+                
                 $greetingMetadata = [
                     'has_template' => true,
                     'template_count' => $templates->count(),
@@ -93,14 +117,19 @@ class ChatController extends Controller
                             'has_html_preview' => !empty($template->metadata['html_preview']),
                         ];
                     })->toArray(),
-                    'primary_template' => $templates->count() === 1 ? [
-                        'id' => $templates->first()->id,
-                        'name' => $templates->first()->name,
-                        'document_type' => $templates->first()->document_type,
+                    'primary_template' => $primaryTemplate ? [
+                        'id' => $primaryTemplate->id,
+                        'name' => $primaryTemplate->name,
+                        'document_type' => $primaryTemplate->document_type,
                     ] : null,
                 ];
             } else {
                 $expectedGreetingMessage = $assistant->greeting_message ?? "Xin chào bạn. Mình là {$assistant->name}. Mình rất vui được giúp đỡ bạn.";
+                
+                \Log::info('🔵 [ChatController] No templates found for assistant', [
+                    'assistant_id' => $assistant->id,
+                    'assistant_type' => $assistantType,
+                ]);
             }
         } else {
             $expectedGreetingMessage = $assistant->greeting_message ?? "Xin chào bạn. Mình là {$assistant->name}. Mình rất vui được giúp đỡ bạn.";
@@ -108,11 +137,26 @@ class ChatController extends Controller
         
         // Create greeting message if session is new and has no messages
         if ($session->wasRecentlyCreated || $session->messages->isEmpty()) {
+            // ✅ MỚI: Build metadata với template_info (không thêm template_html cho report_assistant)
+            $messageMetadata = null;
+            if ($greetingMetadata) {
+                $messageMetadata = ['template_info' => $greetingMetadata];
+            }
+            
+            \Log::info('🔵 [ChatController] Creating greeting message with metadata', [
+                'session_id' => $session->id,
+                'assistant_id' => $assistant->id,
+                'assistant_type' => $assistantType,
+                'has_template_info' => !empty($messageMetadata['template_info']),
+                'has_template_preview' => !empty($messageMetadata['template_preview']),
+                'has_template_html' => !empty($messageMetadata['template_html']),
+            ]);
+            
             ChatMessage::create([
                 'chat_session_id' => $session->id,
                 'sender' => 'assistant',
                 'content' => $expectedGreetingMessage,
-                'metadata' => $greetingMetadata ? ['template_info' => $greetingMetadata] : null,
+                'metadata' => $messageMetadata,
                 'created_at' => now(),
             ]);
             
@@ -127,16 +171,51 @@ class ChatController extends Controller
                 ->first();
             
             if ($firstAssistantMessage) {
-                // Update greeting message if it's different
-                if ($firstAssistantMessage->content !== $expectedGreetingMessage) {
+                // ✅ MỚI: Build metadata với template_info (không thêm template_html cho report_assistant)
+                $messageMetadata = null;
+                if ($greetingMetadata) {
+                    $messageMetadata = ['template_info' => $greetingMetadata];
+                }
+                
+                // ✅ MỚI: LUÔN update greeting message với metadata mới nhất (đặc biệt cho report_assistant)
+                // Đảm bảo greeting message luôn có metadata template mới nhất
+                $currentMetadata = $firstAssistantMessage->metadata ?? [];
+                $currentMetadataJson = json_encode($currentMetadata ?? []);
+                $newMetadataJson = json_encode($messageMetadata ?? []);
+                
+                // Update nếu content khác HOẶC metadata khác HOẶC là report_assistant (để đảm bảo metadata luôn được update)
+                $needsUpdate = $firstAssistantMessage->content !== $expectedGreetingMessage 
+                    || $currentMetadataJson !== $newMetadataJson
+                    || ($assistantType === 'report_assistant' && $greetingMetadata && empty($currentMetadata['template_info']));
+                
+                if ($needsUpdate) {
+                    \Log::info('🔵 [ChatController] Updating greeting message with metadata', [
+                        'session_id' => $session->id,
+                        'assistant_id' => $assistant->id,
+                        'assistant_type' => $assistantType,
+                        'has_template_info' => !empty($messageMetadata['template_info']),
+                        'has_template_preview' => !empty($messageMetadata['template_preview']),
+                        'has_template_html' => !empty($messageMetadata['template_html']),
+                        'current_metadata' => $currentMetadata,
+                        'new_metadata' => $messageMetadata,
+                    ]);
+                    
                     $firstAssistantMessage->update([
                         'content' => $expectedGreetingMessage,
+                        'metadata' => $messageMetadata,
                     ]);
                     
                     // Reload messages
                     $session->load(['messages' => function ($query) {
                         $query->orderBy('created_at');
                     }, 'aiAssistant']);
+                } else {
+                    \Log::info('🔵 [ChatController] Greeting message already up to date', [
+                        'session_id' => $session->id,
+                        'assistant_id' => $assistant->id,
+                        'assistant_type' => $assistantType,
+                        'has_metadata' => !empty($firstAssistantMessage->metadata),
+                    ]);
                 }
             } else {
                 // No assistant greeting message found, insert it at the beginning
@@ -146,10 +225,17 @@ class ChatController extends Controller
                     ? \Carbon\Carbon::parse($earliestMessage->created_at)->subSecond()
                     : now();
                 
+                // ✅ MỚI: Build metadata với template_info (không thêm template_html cho report_assistant)
+                $messageMetadata = null;
+                if ($greetingMetadata) {
+                    $messageMetadata = ['template_info' => $greetingMetadata];
+                }
+                
                 ChatMessage::create([
                     'chat_session_id' => $session->id,
                     'sender' => 'assistant',
                     'content' => $expectedGreetingMessage,
+                    'metadata' => $messageMetadata,
                     'created_at' => $greetingTimestamp,
                 ]);
                 
@@ -187,92 +273,24 @@ class ChatController extends Controller
 
     /**
      * Send message and get response
+     * 
+     * ⚠️ DEPRECATED: This endpoint is deprecated in favor of streamChat().
+     * For better UX and consistent behavior, all chat should use streaming.
+     * This method now redirects to streamChat() for backward compatibility.
+     * 
+     * @deprecated Use streamChat() instead
      */
     public function sendMessage(Request $request, int $sessionId)
     {
-        $request->validate([
-            'message' => 'nullable|string|max:5000',
-            'attachments' => 'nullable|array',
+        Log::info('⚠️ [DEPRECATED] sendMessage() called, redirecting to streamChat()', [
+            'session_id' => $sessionId,
+            'user_id' => Auth::id(),
         ]);
         
-        $user = Auth::user();
-        
-        $session = ChatSession::where('id', $sessionId)
-            ->where('user_id', $user->id)
-            ->with('aiAssistant')
-            ->firstOrFail();
-        
-        $userMessage = $request->input('message', '');
-        $attachments = $request->input('attachments', []);
-        
-        // Build message content with attachments info
-        $messageContent = $userMessage;
-        if (!empty($attachments)) {
-            $fileNames = array_column($attachments, 'name');
-            $messageContent = $messageContent 
-                ? $messageContent . "\n\n[Đã đính kèm: " . implode(', ', $fileNames) . "]"
-                : "[Đã đính kèm: " . implode(', ', $fileNames) . "]";
-        }
-        
-        // Save user message with attachments metadata
-        $chatMessage = ChatMessage::create([
-            'chat_session_id' => $session->id,
-            'sender' => 'user',
-            'content' => $messageContent,
-            'message_type' => !empty($attachments) ? 'document' : 'text',
-            'metadata' => [
-                'attachments' => $attachments,
-                'original_message' => $userMessage,
-            ],
-            'created_at' => now(),
-        ]);
-        
-        // Process message with SmartAssistantEngine
-        try {
-            $result = $this->assistantEngine->processMessage(
-                $userMessage,
-                $session,
-                $session->aiAssistant
-            );
-            
-            // Update session workflow state
-            if ($result['workflow_state']) {
-                $session->update([
-                    'workflow_state' => $result['workflow_state'],
-                ]);
-            }
-            
-            // Save assistant response
-            $assistantMessage = ChatMessage::create([
-                'chat_session_id' => $session->id,
-                'sender' => 'assistant',
-                'content' => $result['response'],
-                'message_type' => 'text',
-                'created_at' => now(),
-                'metadata' => [
-                    'sources' => $result['sources'] ?? null,
-                    'search_results' => $result['search_results'] ?? null,
-                    'report' => $result['report'] ?? null, // Include report data if exists
-                ],
-            ]);
-            
-            return response()->json([
-                'user_message' => $chatMessage,
-                'assistant_message' => $assistantMessage,
-                'workflow_state' => $result['workflow_state'],
-                'report' => $result['report'] ?? null, // Also return report in response
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Chat error', [
-                'error' => $e->getMessage(),
-                'session_id' => $session->id,
-                'trace' => $e->getTraceAsString(),
-            ]);
-            
-            return response()->json([
-                'error' => 'Đã có lỗi xảy ra. Vui lòng thử lại sau.',
-            ], 500);
-        }
+        // ✅ Option 3: Redirect to streamChat() for backward compatibility
+        // Note: This will return SSE stream, not JSON response
+        // Frontend should use streamChat() endpoint directly
+        return $this->streamChat($request, $sessionId);
     }
 
     /**
@@ -513,22 +531,24 @@ class ChatController extends Controller
                     if (ob_get_level() > 0) {
                         ob_flush();
                     }
-                    flush();
-                    
-                    return; // Exit early, don't stream from OpenAI
+                        flush();
+                        
+                        return; // Exit early, don't stream from OpenAI
                 }
                 
                 // ✅ MỚI: Kiểm tra nếu là document_drafting assistant và user yêu cầu tạo document
                 // Thì gọi SmartAssistantEngine thay vì stream từ OpenAI
-                if ($assistant->getAssistantTypeValue() === 'document_drafting') {
-                    // ✅ LOG: Checking if document drafting request
-                    Log::info('🔵 [ChatController] Checking document_drafting request', [
+                // ✅ MỚI: Cũng xử lý report_assistant với create_report intent
+                if (in_array($assistant->getAssistantTypeValue(), ['document_drafting', 'report_assistant'])) {
+                    // ✅ LOG: Checking if document drafting or report creation request
+                    Log::info('🔵 [ChatController] Checking document/report creation request', [
                         'session_id' => $session->id,
                         'assistant_id' => $assistant->id,
+                        'assistant_type' => $assistant->getAssistantTypeValue(),
                         'user_message' => substr($userMessage, 0, 200),
                     ]);
                     
-                    // Recognize intent để xem có phải draft_document không
+                    // Recognize intent để xem có phải draft_document hoặc create_report không
                     $intentRecognizer = app(\App\Services\IntentRecognizer::class);
                     $context = [
                         'session' => $session,
@@ -539,25 +559,32 @@ class ChatController extends Controller
                     $intent = $intentRecognizer->recognize($userMessage, $context);
                     
                     // ✅ LOG: Intent recognized
-                    Log::info('🔵 [ChatController] Intent recognized for document_drafting', [
+                    Log::info('🔵 [ChatController] Intent recognized', [
                         'session_id' => $session->id,
+                        'assistant_type' => $assistant->getAssistantTypeValue(),
                         'intent_type' => $intent['type'] ?? null,
                         'intent_confidence' => $intent['confidence'] ?? null,
                     ]);
                     
-                    // Nếu là draft_document intent, gọi SmartAssistantEngine
-                    if (($intent['type'] ?? null) === 'draft_document') {
-                        Log::info('🔵 [ChatController] Calling SmartAssistantEngine for document drafting', [
+                    // ✅ MỚI: Xử lý cả draft_document (document_drafting) và create_report (report_assistant)
+                    $isDocumentDrafting = $assistant->getAssistantTypeValue() === 'document_drafting' && ($intent['type'] ?? null) === 'draft_document';
+                    $isReportCreation = $assistant->getAssistantTypeValue() === 'report_assistant' && ($intent['type'] ?? null) === 'create_report';
+                    
+                    if ($isDocumentDrafting || $isReportCreation) {
+                        Log::info('🔵 [ChatController] Calling SmartAssistantEngine for document/report creation', [
                             'session_id' => $session->id,
                             'assistant_id' => $session->aiAssistant->id,
+                            'assistant_type' => $assistant->getAssistantTypeValue(),
+                            'intent_type' => $intent['type'],
                         ]);
                         
                         // ✅ PHASE 2 FIX: Loading status đã được gửi ở đầu function, không cần gửi lại
                         // Chỉ cần update message nếu cần
+                        $statusMessage = $isReportCreation ? 'Đang tạo báo cáo từ mẫu...' : 'Đang soạn thảo văn bản...';
                         $draftingStatus = json_encode([
                             'type' => 'status',
                             'status' => 'processing',
-                            'message' => 'Đang soạn thảo văn bản...',
+                            'message' => $statusMessage,
                         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                         echo "data: " . $draftingStatus . "\n\n";
                         if (ob_get_level() > 0) {
@@ -585,9 +612,10 @@ class ChatController extends Controller
                             }
                         );
                         
-                        // ✅ LOG: Document drafting result
-                        Log::info('✅ [ChatController] Document drafting completed', [
+                        // ✅ LOG: Document/report creation result
+                        Log::info('✅ [ChatController] Document/report creation completed', [
                             'session_id' => $session->id,
+                            'assistant_type' => $assistant->getAssistantTypeValue(),
                             'has_document' => isset($result['document']),
                             'document_file_path' => $result['document']['file_path'] ?? null,
                             'template_used' => $result['document']['metadata']['template_used'] ?? false,
@@ -672,7 +700,21 @@ class ChatController extends Controller
                 // Build messages for AI with document context if needed
                 // Use original message (without attachment info) for AI context
                 $aiMessage = $userMessage ?: 'Xem file đính kèm';
+                
+                Log::info('🔵 [ChatController] About to call buildMessagesWithContext', [
+                    'session_id' => $session->id,
+                    'assistant_id' => $session->aiAssistant->id,
+                    'assistant_type' => $session->aiAssistant->assistant_type,
+                    'user_message' => substr($aiMessage, 0, 100),
+                ]);
+                
                 $messages = $this->buildMessagesWithContext($session, $aiMessage);
+                
+                Log::info('🔵 [ChatController] buildMessagesWithContext returned', [
+                    'session_id' => $session->id,
+                    'messages_count' => count($messages),
+                    'first_message_role' => $messages[0]['role'] ?? 'N/A',
+                ]);
                 
                 // Process attachments: Hybrid approach (Vision API for small images, OCR for large)
                 $hasImages = false;
@@ -1253,18 +1295,227 @@ class ChatController extends Controller
             }
         }
         
-        // ✅ MỚI: Xử lý document_drafting assistant - thêm template info vào system prompt
+        // ✅ NEW: Xử lý report_assistant - search documents and add context (similar to qa_based_document)
+        if ($assistant->assistant_type === 'report_assistant') {
+            try {
+                // Check if assistant has indexed documents
+                $documentsCount = $assistant->documents()
+                    ->where(function($q) {
+                        $q->where('status', 'indexed')
+                          ->orWhere('is_indexed', true);
+                    })
+                    ->whereHas('documentChunks', function($q) {
+                        $q->whereNotNull('embedding');
+                    })
+                    ->count();
+                
+                Log::info('🔵 [ChatController] Checking documents for report_assistant', [
+                    'assistant_id' => $assistant->id,
+                    'documents_count' => $documentsCount,
+                    'user_message' => substr($newMessage, 0, 100),
+                ]);
+                
+                if ($documentsCount > 0) {
+                    // ✅ FIX: Thử với nhiều threshold để đảm bảo tìm được kết quả (giống qa_based_document)
+                    $searchResults = null;
+                    $thresholds = [0.7, 0.5, 0.3];
+                    $usedThreshold = null;
+                    
+                    foreach ($thresholds as $threshold) {
+                        $tempResults = $this->vectorSearchService->searchSimilar(
+                            $newMessage,
+                            $assistant->id,
+                            5,
+                            $threshold
+                        );
+                        
+                        if (!empty($tempResults)) {
+                            $searchResults = $tempResults;
+                            $usedThreshold = $threshold;
+                            Log::info('✅ [ChatController] Found search results for report_assistant', [
+                                'assistant_id' => $assistant->id,
+                                'threshold' => $threshold,
+                                'results_count' => count($tempResults),
+                            ]);
+                            break;
+                        }
+                    }
+                    
+                    if (!empty($searchResults)) {
+                        // Build context from search results
+                        $contextText = implode("\n\n---\n\n", array_map(function($r, $i) {
+                            return "[Nguồn " . ($i + 1) . "]\n" . $r['content'];
+                        }, $searchResults, array_keys($searchResults)));
+                        
+                        // Build professional system prompt with document context
+                        $systemPrompt = $this->buildProfessionalSystemPrompt($assistant);
+                        $systemPrompt .= "\n\n**TÀI LIỆU BÁO CÁO THAM KHẢO:**\n{$contextText}\n\n";
+                        $systemPrompt .= "Hãy trả lời câu hỏi của người dùng dựa trên các tài liệu báo cáo trên. ";
+                        $systemPrompt .= "Trả lời chính xác, chi tiết và trích dẫn nguồn khi có thể. ";
+                        $systemPrompt .= "Nếu được yêu cầu tóm tắt, hãy tóm tắt nội dung chính. ";
+                        $systemPrompt .= "Nếu được yêu cầu tạo báo cáo mới, hãy phân tích cấu trúc (đầu mục, format) của báo cáo mẫu và tạo báo cáo tương tự.";
+                        
+                        $messages = [
+                            [
+                                'role' => 'system',
+                                'content' => $systemPrompt,
+                            ],
+                        ];
+                        
+                        // Add previous messages
+                        $previousMessages = $session->messages()
+                            ->orderBy('created_at')
+                            ->get();
+                        
+                        $lastMessage = $previousMessages->last();
+                        $shouldExcludeLast = $lastMessage && 
+                                             $lastMessage->sender === 'user' && 
+                                             $lastMessage->content === $newMessage;
+                        
+                        foreach ($previousMessages as $msg) {
+                            if ($shouldExcludeLast && $msg->id === $lastMessage->id) {
+                                continue;
+                            }
+                            
+                            $messages[] = [
+                                'role' => $msg->sender === 'user' ? 'user' : 'assistant',
+                                'content' => $msg->content,
+                            ];
+                        }
+                        
+                        // Add new message with context
+                        $messages[] = [
+                            'role' => 'user',
+                            'content' => "Câu hỏi: {$newMessage}\n\nTài liệu báo cáo tham khảo:\n{$contextText}\n\nHãy trả lời câu hỏi dựa trên tài liệu báo cáo trên.",
+                        ];
+                        
+                        Log::info('✅ [ChatController] Added report context to stream chat', [
+                            'assistant_id' => $assistant->id,
+                            'search_results_count' => count($searchResults),
+                            'threshold_used' => $usedThreshold,
+                        ]);
+                        
+                        return $messages;
+                    } else {
+                        Log::warning('⚠️ [ChatController] No search results found for report_assistant after trying all thresholds', [
+                            'assistant_id' => $assistant->id,
+                            'message' => substr($newMessage, 0, 100),
+                            'documents_count' => $documentsCount,
+                            'thresholds_tried' => $thresholds,
+                        ]);
+                        // ✅ FIX: Fallback - vẫn thêm thông tin về documents vào system prompt
+                        // Để AI biết rằng có documents nhưng không tìm thấy kết quả phù hợp
+                        $systemPrompt = $this->buildProfessionalSystemPrompt($assistant);
+                        $systemPrompt .= "\n\n**LƯU Ý:** Bạn có {$documentsCount} tài liệu báo cáo đã được upload, nhưng không tìm thấy nội dung phù hợp với câu hỏi. ";
+                        $systemPrompt .= "Hãy trả lời dựa trên kiến thức chung về báo cáo kết quả ĐH Đoàn, hoặc yêu cầu người dùng cung cấp thêm thông tin cụ thể.";
+                        
+                        $messages = [
+                            [
+                                'role' => 'system',
+                                'content' => $systemPrompt,
+                            ],
+                        ];
+                        
+                        // Add previous messages
+                        $previousMessages = $session->messages()
+                            ->orderBy('created_at')
+                            ->get();
+                        
+                        $lastMessage = $previousMessages->last();
+                        $shouldExcludeLast = $lastMessage && 
+                                             $lastMessage->sender === 'user' && 
+                                             $lastMessage->content === $newMessage;
+                        
+                        foreach ($previousMessages as $msg) {
+                            if ($shouldExcludeLast && $msg->id === $lastMessage->id) {
+                                continue;
+                            }
+                            
+                            $messages[] = [
+                                'role' => $msg->sender === 'user' ? 'user' : 'assistant',
+                                'content' => $msg->content,
+                            ];
+                        }
+                        
+                        // Add new message
+                        $messages[] = [
+                            'role' => 'user',
+                            'content' => $newMessage,
+                        ];
+                        
+                        return $messages;
+                    }
+                } else {
+                    Log::warning('⚠️ [ChatController] No indexed documents for report_assistant', [
+                        'assistant_id' => $assistant->id,
+                        'total_documents' => $assistant->documents()->count(),
+                    ]);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to search documents for report_assistant, using generic messages', [
+                    'error' => $e->getMessage(),
+                    'assistant_id' => $assistant->id,
+                ]);
+            }
+        }
+        
+        // ✅ MỚI: Xử lý document_drafting assistant - search template content + thêm template info
         if ($assistant->assistant_type === 'document_drafting') {
             try {
+                // ✅ NEW: Tìm kiếm nội dung template liên quan đến câu hỏi
+                $searchResults = [];
+                
+                // Check if assistant has indexed templates (via AssistantDocuments with source_type='template')
+                $hasIndexedTemplates = $assistant->documents()
+                    ->where(function($q) {
+                        $q->where('status', 'indexed')
+                          ->orWhere('is_indexed', true);
+                    })
+                    ->whereHas('documentChunks', function($q) {
+                        $q->whereNotNull('embedding')
+                          ->whereJsonContains('metadata->source_type', 'template');
+                    })
+                    ->exists();
+                
+                if ($hasIndexedTemplates) {
+                    // Search similar template content
+                    $searchResults = $this->vectorSearchService->searchSimilar(
+                        $newMessage,
+                        $assistant->id,
+                        3, // Top 3 results
+                        0.7, // Min similarity
+                        ['source_type' => 'template'] // ✅ Filter by template chunks only
+                    );
+                }
+                
                 // Load templates từ database
                 $templates = $assistant->documentTemplates()
                     ->where('is_active', true)
                     ->orderBy('name')
                     ->get();
                 
-                // ✅ FIX: Build professional system prompt với template info
+                // ✅ FIX: Build professional system prompt
                 $systemPrompt = $this->buildProfessionalSystemPrompt($assistant);
                 
+                // ✅ NEW: Nếu có search results từ template content, thêm vào context
+                if (!empty($searchResults)) {
+                    $contextText = implode("\n\n---\n\n", array_map(function($r, $i) {
+                        $metadata = $r['metadata'] ?? [];
+                        $docType = $metadata['document_type'] ?? '';
+                        $subtype = $metadata['template_subtype'] ?? '';
+                        $source = $docType . ($subtype ? "/{$subtype}" : '');
+                        return "[Template: {$source}]\n" . $r['content'];
+                    }, $searchResults, array_keys($searchResults)));
+                    
+                    $systemPrompt .= "\n\n**NỘI DUNG TEMPLATE THAM KHẢO:**\n{$contextText}\n\n";
+                    
+                    Log::info('✅ [ChatController] Added template content context to chat', [
+                        'assistant_id' => $assistant->id,
+                        'search_results_count' => count($searchResults),
+                    ]);
+                }
+                
+                // Thêm danh sách template vào system prompt
                 if ($templates->isNotEmpty()) {
                     $templateList = $templates->map(function($t) {
                         $subtype = $t->template_subtype ? "/{$t->template_subtype}" : "";
@@ -1279,6 +1530,11 @@ class ChatController extends Controller
                         'assistant_id' => $assistant->id,
                         'templates_count' => $templates->count(),
                     ]);
+                }
+                
+                // Nếu có template content context, thêm hướng dẫn trả lời
+                if (!empty($searchResults)) {
+                    $systemPrompt .= "\n\nKhi được hỏi về nội dung template, hãy trả lời dựa trên **NỘI DUNG TEMPLATE THAM KHẢO** ở trên.";
                 }
                 
                 // Build messages với system prompt mới
@@ -1318,7 +1574,7 @@ class ChatController extends Controller
                 
                 return $messages;
             } catch (\Exception $e) {
-                Log::warning('Failed to load templates for document_drafting assistant, using generic messages', [
+                Log::warning('Failed to load templates/search template content for document_drafting assistant, using generic messages', [
                     'error' => $e->getMessage(),
                     'assistant_id' => $assistant->id,
                 ]);

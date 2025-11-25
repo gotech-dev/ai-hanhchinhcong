@@ -9,6 +9,7 @@ enum AssistantType: string
     
     // Loại mới - Hành chính công Việt Nam
     case DOCUMENT_DRAFTING = 'document_drafting';
+    case REPORT_ASSISTANT = 'report_assistant';
     case DOCUMENT_MANAGEMENT = 'document_management';
     case HR_MANAGEMENT = 'hr_management';
     case FINANCE_MANAGEMENT = 'finance_management';
@@ -25,6 +26,7 @@ enum AssistantType: string
         return match($this) {
             self::QA_BASED_DOCUMENT => 'Trả lời Q&A từ tài liệu',
             self::DOCUMENT_DRAFTING => 'Soạn thảo Văn bản Hành chính',
+            self::REPORT_ASSISTANT => 'Trợ lý Báo cáo',
             self::DOCUMENT_MANAGEMENT => 'Quản lý Văn bản và Lưu trữ',
             self::HR_MANAGEMENT => 'Quản lý Nhân sự',
             self::FINANCE_MANAGEMENT => 'Quản lý Tài chính và Ngân sách',
@@ -43,6 +45,7 @@ enum AssistantType: string
         return match($this) {
             self::QA_BASED_DOCUMENT => 'Trả lời câu hỏi dựa trên tài liệu đã upload',
             self::DOCUMENT_DRAFTING => 'Soạn thảo các loại văn bản hành chính (Công văn, Quyết định, Tờ trình, Báo cáo, Biên bản, Thông báo, Nghị quyết)',
+            self::REPORT_ASSISTANT => 'Trợ lý chuyên tạo và phân tích báo cáo dựa trên tài liệu đã upload (PDF/DOCX)',
             self::DOCUMENT_MANAGEMENT => 'Quản lý văn bản đến, văn bản đi, phân loại, lưu trữ và nhắc nhở thời hạn xử lý',
             self::HR_MANAGEMENT => 'Quản lý nhân sự: tính lương, chấm công, nghỉ phép, báo cáo nhân sự',
             self::FINANCE_MANAGEMENT => 'Quản lý tài chính: lập dự toán, theo dõi thu chi, cảnh báo vượt ngân sách',

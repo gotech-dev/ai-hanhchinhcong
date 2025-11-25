@@ -161,7 +161,7 @@
                         class="template-preview mt-4 p-4 bg-white border border-gray-200 rounded-lg"
                     >
                         <div class="mb-2 text-sm font-semibold text-gray-700">📄 Template Preview:</div>
-                        <div class="docx-preview" v-html="message.content"></div>
+                        <div class="docx-preview" v-html="message.metadata.template_html || message.content"></div>
                     </div>
                     
                     <!-- ✅ MỚI: Hiển thị DocumentPreview nếu có document metadata -->
@@ -185,7 +185,19 @@
                     <!-- Regular message content - Hiển thị greeting message như cũ -->
                     <div v-if="(!message.report && !message.metadata?.document && !message.metadata?.template_preview) || message.sender === 'user'" class="markdown-content" v-html="renderMarkdown(message.content)"></div>
                     
-                    <!-- ✅ MỚI: Hiển thị TemplateCard bên dưới greeting message nếu có template info -->
+                    <!-- ✅ MỚI: Debug - Log metadata để kiểm tra -->
+                    <div v-if="message.sender === 'assistant'" style="display: none;">
+                        {{ console.log('[IndexNew] Template render check:', {
+                            messageId: message.id,
+                            has_metadata: !!message.metadata,
+                            has_template_info: !!message.metadata?.template_info,
+                            has_template_html: !!message.metadata?.template_html,
+                            template_info: message.metadata?.template_info,
+                            template_html_length: message.metadata?.template_html?.length,
+                        }) }}
+                    </div>
+                    
+                    <!-- ✅ MỚI: Hiển thị TemplateCard bên dưới greeting message nếu có template info (cho cả document_drafting và report_assistant) -->
                     <TemplateCard
                         v-if="message.sender === 'assistant' && message.metadata?.template_info && message.metadata.template_info.has_template"
                         :template-info="message.metadata.template_info"
@@ -462,7 +474,7 @@ const messages = ref([]);
 const isLoading = ref(false);
 const messagesContainer = ref(null);
 const showAssistantInfo = ref(false);
-const useStreaming = ref(true);
+// ✅ Option 3: Luôn dùng streaming (removed useStreaming toggle)
 const { streamResponse } = useChatStream();
 const attachedFiles = ref([]);
 const fileInput = ref(null);
@@ -687,7 +699,7 @@ const handleTemplatePreview = (html) => {
 };
 
 // ✅ MỚI: Handle create from template
-const handleCreateFromTemplate = (messageText) => {
+const handleCreateFromTemplate = async (messageText) => {
     console.log('[IndexNew] Create from template triggered', {
         messageText,
     });
@@ -695,10 +707,9 @@ const handleCreateFromTemplate = (messageText) => {
     // Set message input và trigger send
     messageInput.value = messageText;
     
-    // Trigger send message
-    nextTick(() => {
-        sendMessage();
-    });
+    // Trigger send message tự động
+    await nextTick();
+    await handleSend();
 };
 
 const handleAssistantSelect = async (assistantId) => {
@@ -740,6 +751,22 @@ const onAssistantChange = async () => {
             
             // Load messages from session
             const sessionMessages = currentSession.value.messages || [];
+            
+            // ✅ MỚI: Debug log cho greeting message với template metadata
+            sessionMessages.forEach(msg => {
+                if (msg.sender === 'assistant' && msg.metadata) {
+                    console.log('[IndexNew] Assistant message metadata (onAssistantChange):', {
+                        messageId: msg.id,
+                        content: msg.content?.substring(0, 50),
+                        has_template_info: !!msg.metadata.template_info,
+                        has_template_preview: !!msg.metadata.template_preview,
+                        has_template_html: !!msg.metadata.template_html,
+                        template_info: msg.metadata.template_info,
+                        full_metadata: msg.metadata,
+                    });
+                }
+            });
+            
             messages.value = sessionMessages.sort((a, b) => {
                 const timeA = new Date(a.created_at || 0).getTime();
                 const timeB = new Date(b.created_at || 0).getTime();
@@ -831,6 +858,22 @@ const handleSend = async () => {
             
             // Chỉ set messages từ session mới, đảm bảo không có messages cũ
             const sessionMessages = currentSession.value.messages || [];
+            
+            // ✅ MỚI: Debug log cho greeting message với template metadata
+            sessionMessages.forEach(msg => {
+                if (msg.sender === 'assistant') {
+                    console.log('[IndexNew] Assistant message (sendMessage - new session):', {
+                        messageId: msg.id,
+                        content: msg.content?.substring(0, 50),
+                        has_metadata: !!msg.metadata,
+                        has_template_info: !!msg.metadata?.template_info,
+                        has_template_preview: !!msg.metadata?.template_preview,
+                        has_template_html: !!msg.metadata?.template_html,
+                        template_info: msg.metadata?.template_info,
+                        full_metadata: msg.metadata,
+                    });
+                }
+            });
             
             // Load reminders if document_management assistant
             if (currentAssistant.value?.assistant_type === 'document_management') {
@@ -1010,10 +1053,10 @@ const handleSend = async () => {
     };
     messages.value.push(assistantMessage);
     
-    if (useStreaming.value) {
-        let fullContent = '';
-        
-        // Define onReport callback BEFORE calling streamResponse
+    // ✅ Option 3: Luôn dùng streaming (removed useStreaming toggle)
+    let fullContent = '';
+    
+    // Define onReport callback BEFORE calling streamResponse
         const onReportCallback = (reportData, messageId) => {
             // ✅ LOG: Report callback called
             console.log('[IndexNew] onReportCallback called', {
@@ -1251,28 +1294,6 @@ const handleSend = async () => {
             // ✅ FIX: Handle document data - Pass the callback function for document_drafting assistant
             onDocumentCallback
         );
-    } else {
-        try {
-            const response = await axios.post(`/api/chat/sessions/${currentSession.value.id}/message`, {
-                message: message || 'Xem file đính kèm',
-                attachments: uploadedFiles,
-            });
-            
-            assistantMessage.content = response.data.assistant_message.content;
-            assistantMessage.id = response.data.assistant_message.id;
-            // Update user message ID từ server nếu có
-            if (response.data.user_message?.id) {
-                userMessage.id = response.data.user_message.id;
-            }
-            // Không reload messages, chỉ merge nếu cần
-        } catch (error) {
-            console.error('Error sending message:', error);
-            assistantMessage.content = 'Xin lỗi, đã có lỗi xảy ra. Vui lòng thử lại sau.';
-        } finally {
-            isLoading.value = false;
-            scrollToBottom();
-        }
-    }
 };
 
 const loadMessages = async () => {
@@ -1408,8 +1429,29 @@ const selectSession = async (sessionId) => {
         currentSession.value = session;
         currentAssistant.value = session.ai_assistant;
         const sessionMessages = session.messages || [];
+        
+        console.log('[IndexNew] selectSession - Loading messages:', {
+            sessionId: session.id,
+            messageCount: sessionMessages.length,
+            assistantType: session.ai_assistant?.assistant_type,
+        });
+        
         // Load attachments, report, and document from metadata if available
         sessionMessages.forEach(msg => {
+            // ✅ MỚI: Debug log cho greeting message với template metadata
+            if (msg.sender === 'assistant') {
+                console.log('[IndexNew] Assistant message (selectSession):', {
+                    messageId: msg.id,
+                    content: msg.content?.substring(0, 50),
+                    has_metadata: !!msg.metadata,
+                    has_template_info: !!msg.metadata?.template_info,
+                    has_template_preview: !!msg.metadata?.template_preview,
+                    has_template_html: !!msg.metadata?.template_html,
+                    template_info: msg.metadata?.template_info,
+                    full_metadata: msg.metadata,
+                });
+            }
+            
             if (msg.metadata?.attachments) {
                 msg.attachments = msg.metadata.attachments;
             }

@@ -185,6 +185,14 @@ class SmartAssistantEngine
                 $assistant->getAssistantTypeValue() === 'qa_based_document' 
                     => $this->handleAskQuestion($userMessage, $session, $assistant, $intent, $streamCallback),
                 
+                // ✅ FIX: Report assistant - dùng handleAskQuestion để search documents (giống qa_based_document)
+                $assistant->getAssistantTypeValue() === 'report_assistant' && $intent['type'] === 'ask_question'
+                    => $this->handleAskQuestion($userMessage, $session, $assistant, $intent, $streamCallback),
+                
+                // ✅ MỚI: Report assistant - xử lý yêu cầu tạo mẫu báo cáo (hiển thị template HTML)
+                $assistant->getAssistantTypeValue() === 'report_assistant' && $intent['type'] === 'create_report'
+                    => $this->handleShowReportTemplate($userMessage, $session, $assistant, $intent, $streamCallback),
+                
                 // Search document (generic)
                 $intent['type'] === 'search_document' 
                     => $this->handleSearchDocument($userMessage, $session, $assistant, $intent),
@@ -795,8 +803,9 @@ class SmartAssistantEngine
         
         // ✅ QUAN TRỌNG: Chỉ xử lý cho qa_based_document
         $assistantTypeValue = $assistant->getAssistantTypeValue();
-        if ($assistantTypeValue !== 'qa_based_document') {
-            Log::warning('🔵 [handleAskQuestion] Not Q&A assistant, falling back to generic', [
+        // ✅ FIX: Cho phép cả qa_based_document và report_assistant dùng handleAskQuestion
+        if ($assistantTypeValue !== 'qa_based_document' && $assistantTypeValue !== 'report_assistant') {
+            Log::warning('🔵 [handleAskQuestion] Not Q&A or Report assistant, falling back to generic', [
                 'assistant_type' => $assistantTypeValue,
                 'has_stream_callback' => !!$streamCallback,
             ]);
@@ -804,7 +813,8 @@ class SmartAssistantEngine
             return $this->handleGenericRequest($userMessage, $session, $assistant, $intent, $streamCallback);
         }
         
-        if ($assistantTypeValue === 'qa_based_document') {
+        // ✅ FIX: Xử lý cả qa_based_document và report_assistant (cả 2 đều cần search documents)
+        if ($assistantTypeValue === 'qa_based_document' || $assistantTypeValue === 'report_assistant') {
             try {
                 // ✅ BƯỚC 1: Check if assistant has documents
                 // ✅ FIX: Check cả status='indexed' HOẶC is_indexed=true (vì có thể status='error' nhưng vẫn có embeddings)
@@ -818,6 +828,12 @@ class SmartAssistantEngine
                         $q->whereNotNull('embedding');
                     })
                     ->count();
+                
+                Log::info('🔵 [handleAskQuestion] Checking documents', [
+                    'assistant_id' => $assistant->id,
+                    'assistant_type' => $assistantTypeValue,
+                    'documents_count' => $documentsCount,
+                ]);
                 
                 if ($documentsCount > 0) {
                     // ✅ Có documents → Tìm kiếm trong documents (exclude reference URLs)
@@ -2881,6 +2897,153 @@ class SmartAssistantEngine
         // ✅ MỚI: Sử dụng SystemPromptBuilder để build prompt theo priority
         $builder = app(\App\Services\SystemPromptBuilder::class);
         return $builder->build($assistant);
+    }
+
+    /**
+     * ✅ MỚI: Xử lý yêu cầu tạo mẫu báo cáo - hiển thị template HTML đã lưu
+     * TUYỆT ĐỐI KHÔNG tự bịa tạo mẫu, chỉ hiển thị template HTML từ database
+     *
+     * @param string $userMessage
+     * @param ChatSession $session
+     * @param AiAssistant $assistant
+     * @param array $intent
+     * @param callable|null $streamCallback
+     * @return array
+     */
+    protected function handleShowReportTemplate(
+        string $userMessage,
+        ChatSession $session,
+        AiAssistant $assistant,
+        array $intent,
+        ?callable $streamCallback = null
+    ): array {
+        // ✅ QUAN TRỌNG: Chỉ xử lý cho report_assistant
+        if ($assistant->getAssistantTypeValue() !== 'report_assistant') {
+            Log::warning('handleShowReportTemplate called for non-report_assistant', [
+                'assistant_id' => $assistant->id,
+                'assistant_type' => $assistant->getAssistantTypeValue(),
+            ]);
+            return $this->handleGenericRequest($userMessage, $session, $assistant, $intent, $streamCallback);
+        }
+        
+        try {
+            // Tìm template của assistant
+            $template = \App\Models\DocumentTemplate::where('ai_assistant_id', $assistant->id)
+                ->where('is_active', true)
+                ->orderBy('created_at', 'desc')
+                ->first();
+            
+            if (!$template) {
+                Log::warning('⚠️ [handleShowReportTemplate] No template found for assistant', [
+                    'assistant_id' => $assistant->id,
+                ]);
+                
+                $response = "Xin lỗi, tôi không tìm thấy template mẫu báo cáo. Vui lòng liên hệ admin để upload template.";
+                
+                if ($streamCallback) {
+                    $streamCallback($response);
+                }
+                
+                return [
+                    'response' => $response,
+                    'workflow_state' => null,
+                ];
+            }
+            
+            // ✅ MỚI: Tạo văn bản từ template thay vì chỉ hiển thị preview
+            $collectedData = $session->collected_data ?? [];
+            
+            // Lấy document_type từ template
+            $documentType = null;
+            try {
+                $documentType = \App\Enums\DocumentType::from($template->document_type);
+            } catch (\ValueError $e) {
+                Log::warning('⚠️ [handleShowReportTemplate] Invalid document_type in template', [
+                    'assistant_id' => $assistant->id,
+                    'template_id' => $template->id,
+                    'template_document_type' => $template->document_type,
+                ]);
+                
+                $response = "Xin lỗi, template có loại văn bản không hợp lệ. Vui lòng liên hệ admin.";
+                
+                if ($streamCallback) {
+                    $streamCallback($response);
+                }
+                
+                return [
+                    'response' => $response,
+                    'workflow_state' => null,
+                ];
+            }
+            
+            // Gọi DocumentDraftingService để tạo văn bản từ template
+            $result = $this->documentDraftingService->draftDocument(
+                $userMessage,
+                $documentType,
+                $session,
+                $assistant,
+                $collectedData,
+                null, // templateSubtype
+                $template->id // templateId
+            );
+            
+            // Tạo response message (giống handleDraftDocument)
+            $response = "✅ Đã tạo văn bản từ mẫu {$template->name} thành công!\n\n";
+            $response .= "**Nội dung văn bản:**\n\n";
+            $response .= $result['content'] . "\n\n";
+            
+            if (isset($result['file_path'])) {
+                $response .= "📄 **File DOCX:** " . $result['file_path'] . "\n\n";
+            }
+            
+            // Add template info to response
+            if (isset($result['metadata']['template_used']) && $result['metadata']['template_used']) {
+                $response .= "\n📋 **Template đã sử dụng:** Có";
+                if (isset($result['metadata']['template_id'])) {
+                    $response .= " (ID: {$result['metadata']['template_id']})";
+                }
+                $response .= "\n";
+            }
+            
+            if ($streamCallback) {
+                $streamCallback($response);
+            }
+            
+            Log::info('✅ [handleShowReportTemplate] Created document from template', [
+                'assistant_id' => $assistant->id,
+                'template_id' => $template->id,
+                'template_name' => $template->name,
+                'document_type' => $documentType->value,
+                'file_path' => $result['file_path'] ?? null,
+                'template_used' => $result['metadata']['template_used'] ?? false,
+            ]);
+            
+            // ✅ QUAN TRỌNG: Trả về format giống handleDraftDocument để frontend hiển thị DocumentPreview
+            return [
+                'response' => $response,
+                'workflow_state' => [
+                    'current_step' => 'completed',
+                ],
+                'document' => $result, // ✅ Format giống handleDraftDocument
+            ];
+        } catch (\Exception $e) {
+            Log::error('❌ [handleShowReportTemplate] Error', [
+                'assistant_id' => $assistant->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            $errorResponse = "Xin lỗi, đã có lỗi xảy ra khi tạo văn bản từ mẫu. Vui lòng thử lại sau.";
+            
+            if ($streamCallback) {
+                $streamCallback($errorResponse);
+            }
+            
+            return [
+                'response' => $errorResponse,
+                'workflow_state' => null,
+            ];
+        }
     }
 
     /**

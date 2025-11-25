@@ -58,7 +58,7 @@
                 </div>
 
                 <!-- Documents Upload (for Q&A based) -->
-                <div v-if="form.assistant_type === 'qa_based_document'">
+                <div v-if="form.assistant_type === 'qa_based_document' || form.assistant_type === 'report_assistant'">
                     <label class="block text-sm font-medium text-gray-700 mb-2">
                         Upload Tài liệu (PDF/DOCX)
                     </label>
@@ -96,7 +96,7 @@
                 </div>
 
                 <!-- Reference URLs (for Q&A based) -->
-                <div v-if="form.assistant_type === 'qa_based_document'">
+                <div v-if="form.assistant_type === 'qa_based_document' || form.assistant_type === 'report_assistant'">
                     <label class="block text-sm font-medium text-gray-700 mb-2">
                         URL Tham Khảo (Tùy chọn)
                     </label>
@@ -168,10 +168,11 @@
                     </p>
                 </div>
 
-                <!-- Templates Upload (for document_drafting) -->
-                <div v-if="form.assistant_type === 'document_drafting'">
+                <!-- Templates Upload (for document_drafting and report_assistant) -->
+                <div v-if="form.assistant_type === 'document_drafting' || form.assistant_type === 'report_assistant'">
                     <label class="block text-sm font-medium text-gray-700 mb-2">
-                        Upload Templates Văn bản (PDF/DOCX) *
+                        <span v-if="form.assistant_type === 'document_drafting'">Upload Templates Văn bản (PDF/DOCX) *</span>
+                        <span v-else-if="form.assistant_type === 'report_assistant'">Upload Templates Báo cáo (PDF/DOCX) *</span>
                     </label>
                     <input
                         ref="templatesFileInput"
@@ -249,7 +250,7 @@
                 </div>
                 
                 <!-- ✅ CẢI TIẾN: Thông báo cho Q&A assistant -->
-                <div v-else-if="form.assistant_type === 'qa_based_document'" class="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div v-else-if="form.assistant_type === 'qa_based_document' || form.assistant_type === 'report_assistant'" class="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
                     <div class="flex items-start">
                         <svg class="w-5 h-5 text-blue-500 mt-0.5 mr-2 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                             <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
@@ -366,6 +367,7 @@ const errors = ref({});
 const shouldShowStepsManager = computed(() => {
     // Q&A và Document Management không cần steps
     if (form.value.assistant_type === 'qa_based_document' || 
+        form.value.assistant_type === 'report_assistant' ||
         form.value.assistant_type === 'document_management') {
         return false;
     }
@@ -437,20 +439,20 @@ const createAssistant = async () => {
         };
         
         // Add files to form data
-        if (form.value.assistant_type === 'document_drafting' && selectedTemplates.value.length > 0) {
+        if ((form.value.assistant_type === 'document_drafting' || form.value.assistant_type === 'report_assistant') && selectedTemplates.value.length > 0) {
             formData.templates = selectedTemplates.value;
             uploadStatus.value = 'Đang upload templates...';
             // ✅ Task 4.2: Set placeholder generation status
             isGeneratingPlaceholders.value = true;
         }
         
-        if (form.value.assistant_type === 'qa_based_document' && selectedDocuments.value.length > 0) {
+        if ((form.value.assistant_type === 'qa_based_document' || form.value.assistant_type === 'report_assistant') && selectedDocuments.value.length > 0) {
             formData.documents = selectedDocuments.value;
             uploadStatus.value = 'Đang upload và index documents...';
         }
         
         // Add reference URLs (filter out empty strings)
-        if (form.value.assistant_type === 'qa_based_document' && form.value.reference_urls && form.value.reference_urls.length > 0) {
+        if ((form.value.assistant_type === 'qa_based_document' || form.value.assistant_type === 'report_assistant') && form.value.reference_urls && form.value.reference_urls.length > 0) {
             formData.reference_urls = form.value.reference_urls.filter(url => url && url.trim() !== '');
         }
         
@@ -461,7 +463,7 @@ const createAssistant = async () => {
                 if (progress.percentage) {
                     uploadStatus.value = `Đang upload... ${Math.round(progress.percentage)}%`;
                     // Show placeholder generation message after upload starts
-                    if (progress.percentage > 50 && form.value.assistant_type === 'document_drafting' && selectedTemplates.value.length > 0) {
+                    if (progress.percentage > 50 && (form.value.assistant_type === 'document_drafting' || form.value.assistant_type === 'report_assistant') && selectedTemplates.value.length > 0) {
                         isGeneratingPlaceholders.value = true;
                     }
                 }

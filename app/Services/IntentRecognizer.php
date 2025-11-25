@@ -295,9 +295,10 @@ class IntentRecognizer
         $message = mb_strtolower($userMessage);
         
         $patterns = [
-            'create_report' => ['tạo báo cáo', 'tạo file', 'tạo tài liệu', 'tạo báo', 'làm báo cáo', 'tự điền', 'điền data', 'data mẫu', 'tạo mẫu'],
+            'create_report' => ['tạo báo cáo', 'tạo file', 'tạo tài liệu', 'tạo báo', 'làm báo cáo', 'tự điền', 'điền data', 'data mẫu', 'tạo mẫu', 'tạo văn bản từ template', 'tạo từ mẫu'],
             // ✅ ADDED BACK: 'tự điền', 'data mẫu' keywords for fallback recognition
             // These indicate user wants to create a report with auto-filled data
+            // ✅ ADDED: 'tạo văn bản từ template', 'tạo từ mẫu' for report assistant
             'ask_question' => ['hỏi', 'câu hỏi', 'là gì', 'như thế nào', 'thủ tục', 'quy định'],
             'download_file' => ['tải', 'download', 'tải xuống', 'lấy file'],
             'update_info' => ['cập nhật', 'sửa', 'chỉnh sửa', 'thay đổi'],

@@ -188,9 +188,100 @@ class AdminController extends Controller
                 );
             }
             
-            // Process document templates for document_drafting
-            if ($data['assistant_type'] === 'document_drafting' && $request->hasFile('templates')) {
+            // Process document templates for document_drafting and report_assistant
+            if (in_array($data['assistant_type'], ['document_drafting', 'report_assistant']) && $request->hasFile('templates')) {
                 $this->processDocumentTemplates($request->file('templates'), $assistant);
+            }
+            
+            // ✅ MỚI: Process uploaded report documents for report_assistant (khi tạo mới)
+            if ($data['assistant_type'] === 'report_assistant' && $request->hasFile('documents')) {
+                try {
+                    $reportFiles = $request->file('documents');
+                    foreach ($reportFiles as $file) {
+                        $originalExtension = strtolower($file->getClientOriginalExtension());
+                        $fileName = $file->getClientOriginalName();
+                        Log::info('📄 [AdminController] Processing report document (create)', [
+                            'assistant_id' => $assistant->id,
+                            'file_name' => $fileName,
+                            'original_ext' => $originalExtension,
+                        ]);
+
+                        // Convert PDF → DOCX using Aspose if needed
+                        if ($originalExtension === 'pdf') {
+                            $aspose = app(\App\Services\AsposeWordsConverter::class);
+                            if ($aspose->isConfigured()) {
+                                $docxPath = $aspose->convertPdfToDocx($file);
+                                if ($docxPath && file_exists($docxPath)) {
+                                    $file = new \Illuminate\Http\UploadedFile(
+                                        $docxPath,
+                                        pathinfo($fileName, PATHINFO_FILENAME) . '.docx',
+                                        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                                        null,
+                                        true
+                                    );
+                                    $fileName = pathinfo($fileName, PATHINFO_FILENAME) . '.docx';
+                                    Log::info('✅ Converted PDF to DOCX for report (create)', ['file' => $fileName]);
+                                } else {
+                                    throw new \Exception('Converted DOCX not found');
+                                }
+                            } else {
+                                throw new \Exception('Aspose not configured');
+                            }
+                        }
+
+                        // Store file
+                        $path = $file->store('report-documents', 'public');
+                        $url = Storage::disk('public')->url($path);
+
+                        // Extract text
+                        $text = $this->documentProcessor->extractText($file);
+
+                        // Create AssistantDocument record
+                        $assistantDoc = AssistantDocument::create([
+                            'ai_assistant_id' => $assistant->id,
+                            'file_name' => $fileName,
+                            'file_path' => $url,
+                            'file_type' => strtolower(pathinfo($fileName, PATHINFO_EXTENSION)),
+                            'file_size' => $file->getSize(),
+                            'status' => 'pending',
+                        ]);
+
+                        if (!empty($text)) {
+                            // Split & embed
+                            $chunks = $this->documentProcessor->splitIntoChunks($text);
+                            $embeddings = $this->vectorSearchService->createEmbeddings($chunks);
+                            foreach ($chunks as $idx => $chunk) {
+                                $this->vectorSearchService->saveChunk(
+                                    $assistantDoc->id,
+                                    $idx,
+                                    $chunk,
+                                    $embeddings[$idx] ?? [],
+                                    ['source_type' => 'report']
+                                );
+                            }
+                            $assistantDoc->update([
+                                'is_indexed' => true,
+                                'status' => 'indexed',
+                                'chunks_count' => count($chunks),
+                                'indexed_at' => now(),
+                            ]);
+                            Log::info('✅ Report document vectorized (create)', [
+                                'assistant_id' => $assistant->id,
+                                'doc_id' => $assistantDoc->id,
+                                'chunks' => count($chunks),
+                            ]);
+                        } else {
+                            Log::warning('⚠️ No text extracted from report document (create)', ['file' => $fileName]);
+                        }
+                    }
+                } catch (\Exception $e) {
+                    Log::error('❌ Failed processing report documents (create)', [
+                        'assistant_id' => $assistant->id,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                    ]);
+                    // Continue without aborting creation
+                }
             }
             
             // ✅ MỚI: Lưu reference URLs cho Q&A assistant
@@ -361,9 +452,99 @@ class AdminController extends Controller
                 );
             }
             
-            // Process new document templates for document_drafting
-            if ($data['assistant_type'] === 'document_drafting' && $request->hasFile('templates')) {
+            // Process new document templates for document_drafting and report_assistant
+            if (in_array($data['assistant_type'], ['document_drafting', 'report_assistant']) && $request->hasFile('templates')) {
                 $this->processDocumentTemplates($request->file('templates'), $assistant);
+            }
+
+            // ✅ NEW: Process uploaded report documents for report_assistant
+            if ($data['assistant_type'] === 'report_assistant' && $request->hasFile('documents')) {
+                try {
+                    $reportFiles = $request->file('documents');
+                    foreach ($reportFiles as $file) {
+                        $originalExtension = strtolower($file->getClientOriginalExtension());
+                        $fileName = $file->getClientOriginalName();
+                        Log::info('📄 [AdminController] Processing report document', [
+                            'assistant_id' => $assistant->id,
+                            'file_name' => $fileName,
+                            'original_ext' => $originalExtension,
+                        ]);
+
+                        // Convert PDF → DOCX using Aspose if needed
+                        if ($originalExtension === 'pdf') {
+                            $aspose = app(\App\Services\AsposeWordsConverter::class);
+                            if ($aspose->isConfigured()) {
+                                $docxPath = $aspose->convertPdfToDocx($file);
+                                if ($docxPath && file_exists($docxPath)) {
+                                    $file = new \Illuminate\Http\UploadedFile(
+                                        $docxPath,
+                                        pathinfo($fileName, PATHINFO_FILENAME) . '.docx',
+                                        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                                        null,
+                                        true
+                                    );
+                                    $fileName = pathinfo($fileName, PATHINFO_FILENAME) . '.docx';
+                                    Log::info('✅ Converted PDF to DOCX for report', ['file' => $fileName]);
+                                } else {
+                                    throw new \Exception('Converted DOCX not found');
+                                }
+                            } else {
+                                throw new \Exception('Aspose not configured');
+                            }
+                        }
+
+                        // Store file
+                        $path = $file->store('report-documents', 'public');
+                        $url = Storage::disk('public')->url($path);
+
+                        // Extract text
+                        $text = $this->documentProcessor->extractText($file);
+
+                        // Create AssistantDocument record
+                        $assistantDoc = AssistantDocument::create([
+                            'ai_assistant_id' => $assistant->id,
+                            'file_name' => $fileName,
+                            'file_path' => $url,
+                            'file_type' => strtolower(pathinfo($fileName, PATHINFO_EXTENSION)),
+                            'file_size' => $file->getSize(),
+                            'status' => 'pending',
+                        ]);
+
+                        if (!empty($text)) {
+                            // Split & embed
+                            $chunks = $this->documentProcessor->splitIntoChunks($text);
+                            $embeddings = $this->vectorSearchService->createEmbeddings($chunks);
+                            foreach ($chunks as $idx => $chunk) {
+                                $this->vectorSearchService->saveChunk(
+                                    $assistantDoc->id,
+                                    $idx,
+                                    $chunk,
+                                    $embeddings[$idx] ?? [],
+                                    ['source_type' => 'report']
+                                );
+                            }
+                            $assistantDoc->update([
+                                'is_indexed' => true,
+                                'status' => 'indexed',
+                                'chunks_count' => count($chunks),
+                                'indexed_at' => now(),
+                            ]);
+                            Log::info('✅ Report document vectorized', [
+                                'assistant_id' => $assistant->id,
+                                'doc_id' => $assistantDoc->id,
+                                'chunks' => count($chunks),
+                            ]);
+                        } else {
+                            Log::warning('⚠️ No text extracted from report document', ['file' => $fileName]);
+                        }
+                    }
+                } catch (\Exception $e) {
+                    Log::error('❌ Failed processing report documents', [
+                        'assistant_id' => $assistant->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                    // Continue without aborting creation
+                }
             }
             
             DB::commit();
@@ -618,9 +799,9 @@ class AdminController extends Controller
                     }
                 }
                 
-                // ✅ MỚI: Convert template to HTML và lưu vào metadata (chỉ cho document_drafting và report_generator)
+                // ✅ MỚI: Convert template to HTML và lưu vào metadata (cho document_drafting, report_generator và report_assistant)
                 $htmlPreview = null;
-                if (in_array($assistant->assistant_type, ['document_drafting', 'report_generator'])) {
+                if (in_array($assistant->assistant_type, ['document_drafting', 'report_generator', 'report_assistant'])) {
                     try {
                         $asposeConverter = app(\App\Services\AsposeWordsConverter::class);
                         
@@ -662,7 +843,7 @@ class AdminController extends Controller
                 }
                 
                 // Create document template record
-                \App\Models\DocumentTemplate::create([
+                $templateRecord = \App\Models\DocumentTemplate::create([
                     'ai_assistant_id' => $assistant->id,
                     'document_type' => $documentType,
                     'template_subtype' => $templateSubtype,
@@ -674,6 +855,79 @@ class AdminController extends Controller
                     'metadata' => $metadata,
                     'is_active' => true,
                 ]);
+                
+                // ✅ NEW: Vector hóa template để có thể trả lời câu hỏi về nội dung
+                try {
+                    Log::info('🔵 [AdminController] Starting template vectorization for Q&A', [
+                        'template_id' => $templateRecord->id,
+                        'file_name' => $fileName,
+                    ]);
+                    
+                    // Extract text từ template file
+                    $text = $this->documentProcessor->extractText($file);
+                    
+                    if (!empty($text)) {
+                        // Tạo AssistantDocument record cho template
+                        $assistantDoc = AssistantDocument::create([
+                            'ai_assistant_id' => $assistant->id,
+                            'file_name' => $fileName,
+                            'file_path' => $url,
+                            'file_type' => $finalExtension,
+                            'file_size' => $file->getSize(),
+                            'status' => 'pending',
+                        ]);
+                        
+                        // Split into chunks
+                        $chunks = $this->documentProcessor->splitIntoChunks($text);
+                        
+                        // Create embeddings for all chunks
+                        $embeddings = $this->vectorSearchService->createEmbeddings($chunks);
+                        
+                        // Save chunks with embeddings và metadata chỉ rõ đây là template
+                        foreach ($chunks as $index => $chunk) {
+                            $this->vectorSearchService->saveChunk(
+                                $assistantDoc->id,
+                                $index,
+                                $chunk,
+                                $embeddings[$index] ?? [],
+                                [
+                                    'source_type' => 'template', // ✅ Mark as template content
+                                    'template_id' => $templateRecord->id,
+                                    'document_type' => $documentType,
+                                    'template_subtype' => $templateSubtype,
+                                    'chunk_index' => $index,
+                                ]
+                            );
+                        }
+                        
+                        // Mark as indexed
+                        $assistantDoc->update([
+                            'is_indexed' => true,
+                            'status' => 'indexed',
+                            'chunks_count' => count($chunks),
+                            'indexed_at' => now(),
+                        ]);
+                        
+                        Log::info('✅ [AdminController] Template vectorized successfully', [
+                            'template_id' => $templateRecord->id,
+                            'assistant_document_id' => $assistantDoc->id,
+                            'chunks_count' => count($chunks),
+                            'file_name' => $fileName,
+                        ]);
+                    } else {
+                        Log::warning('⚠️ [AdminController] No text extracted from template, skipping vectorization', [
+                            'template_id' => $templateRecord->id,
+                            'file_name' => $fileName,
+                        ]);
+                    }
+                } catch (\Exception $e) {
+                    Log::error('❌ [AdminController] Failed to vectorize template', [
+                        'template_id' => $templateRecord->id,
+                        'error' => $e->getMessage(),
+                        'file_name' => $fileName,
+                    ]);
+                    // Don't throw - template is still created, just without vectorization
+                }
                 
                 Log::info('Document template processed', [
                     'assistant_id' => $assistant->id,
@@ -916,7 +1170,8 @@ class AdminController extends Controller
             ->where('admin_id', $user->id)
             ->firstOrFail();
         
-        if ($assistant->assistant_type !== 'qa_based_document') {
+        // Allow document upload for qa_based_document and report_assistant types
+        if (!in_array($assistant->assistant_type, ['qa_based_document', 'report_assistant'])) {
             return response()->json([
                 'error' => 'This assistant type does not support document upload',
             ], 400);

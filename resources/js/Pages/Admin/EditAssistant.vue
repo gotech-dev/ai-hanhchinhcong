@@ -54,8 +54,8 @@
                     </select>
                 </div>
 
-                <!-- Documents Upload (for Q&A based) -->
-                <div v-if="form.assistant_type === 'qa_based_document'">
+                <!-- Documents Upload (for Q&A based and Report Assistant) -->
+                <div v-if="form.assistant_type === 'qa_based_document' || form.assistant_type === 'report_assistant'">
                     <label class="block text-sm font-medium text-gray-700 mb-2">
                         Upload Tài liệu Mới (PDF/DOCX)
                     </label>
@@ -106,8 +106,8 @@
                     </div>
                 </div>
 
-                <!-- Reference URLs Section (for Q&A based) -->
-                <div v-if="form.assistant_type === 'qa_based_document' && props.referenceUrls && props.referenceUrls.length > 0" class="mt-6">
+                <!-- Reference URLs Section (for Q&A based and Report Assistant) -->
+                <div v-if="(form.assistant_type === 'qa_based_document' || form.assistant_type === 'report_assistant') && props.referenceUrls && props.referenceUrls.length > 0" class="mt-6">
                     <h3 class="text-lg font-medium text-gray-900 mb-4">URL Tham Khảo</h3>
                     <div class="space-y-3">
                         <div
@@ -182,10 +182,11 @@
                     </p>
                 </div>
 
-                <!-- Templates Upload (for document_drafting) -->
-                <div v-if="form.assistant_type === 'document_drafting'">
+                <!-- Templates Upload (for document_drafting and report_assistant) -->
+                <div v-if="form.assistant_type === 'document_drafting' || form.assistant_type === 'report_assistant'">
                     <label class="block text-sm font-medium text-gray-700 mb-2">
-                        Upload Templates Mới (PDF/DOCX)
+                        <span v-if="form.assistant_type === 'document_drafting'">Upload Templates Mới (PDF/DOCX)</span>
+                        <span v-else-if="form.assistant_type === 'report_assistant'">Upload Templates Báo cáo Mới (PDF/DOCX)</span>
                     </label>
                     <input
                         ref="templatesFileInput"
@@ -408,13 +409,13 @@ const updateAssistant = async () => {
         };
         
         // Add files to form data
-        if (form.value.assistant_type === 'document_drafting' && selectedTemplates.value.length > 0) {
+        if ((form.value.assistant_type === 'document_drafting' || form.value.assistant_type === 'report_assistant') && selectedTemplates.value.length > 0) {
             formData.templates = selectedTemplates.value;
             uploadStatus.value = 'Đang upload templates...';
             isGeneratingPlaceholders.value = true;
         }
         
-        if (form.value.assistant_type === 'qa_based_document' && selectedDocuments.value.length > 0) {
+        if ((form.value.assistant_type === 'qa_based_document' || form.value.assistant_type === 'report_assistant') && selectedDocuments.value.length > 0) {
             formData.documents = selectedDocuments.value;
             uploadStatus.value = 'Đang upload và index documents...';
         }
@@ -425,7 +426,7 @@ const updateAssistant = async () => {
             onProgress: (progress) => {
                 if (progress.percentage) {
                     uploadStatus.value = `Đang upload... ${Math.round(progress.percentage)}%`;
-                    if (progress.percentage > 50 && form.value.assistant_type === 'document_drafting' && selectedTemplates.value.length > 0) {
+                    if (progress.percentage > 50 && (form.value.assistant_type === 'document_drafting' || form.value.assistant_type === 'report_assistant') && selectedTemplates.value.length > 0) {
                         isGeneratingPlaceholders.value = true;
                     }
                 }
