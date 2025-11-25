@@ -53,6 +53,9 @@ Route::middleware('auth:web')->group(function () {
         Route::post('/sessions/{sessionId}/documents/classify', [ChatController::class, 'classifyDocument']);
         Route::get('/sessions/{sessionId}/documents', [ChatController::class, 'getDocuments']);
         Route::get('/sessions/{sessionId}/reminders', [ChatController::class, 'getReminders']);
+        
+        // ✅ MỚI: Update template HTML in message metadata (for template editing)
+        Route::put('/messages/{messageId}/template-html', [ChatController::class, 'updateMessageTemplateHtml']);
     });
     
     // Report routes

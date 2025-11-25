@@ -1954,5 +1954,130 @@ class ChatController extends Controller
         
         return $prompt;
     }
+    
+    /**
+     * Update template HTML in message metadata
+     * API: PUT /api/chat/messages/{messageId}/template-html
+     */
+    public function updateMessageTemplateHtml(Request $request, $messageId)
+    {
+        Log::info('🔵 [ChatController] Update message template HTML requested', [
+            'message_id' => $messageId,
+            'user_id' => Auth::id(),
+        ]);
+        
+        $request->validate([
+            'html_preview' => 'required|string',
+        ]);
+        
+        $message = ChatMessage::findOrFail($messageId);
+        
+        // Authorization: Check if message belongs to user's session
+        if ($message->chatSession->user_id !== Auth::id()) {
+            Log::warning('⚠️ [ChatController] Unauthorized template HTML update', [
+                'message_id' => $messageId,
+                'message_user_id' => $message->chatSession->user_id,
+                'request_user_id' => Auth::id(),
+            ]);
+            abort(403, 'Unauthorized');
+        }
+        
+        $htmlPreview = $request->input('html_preview');
+        
+        // ✅ Convert HTML → DOCX và lưu file mới
+        $newDocxPath = null;
+        $newUrl = null;
+        try {
+            $asposeConverter = app(\App\Services\AsposeWordsConverter::class);
+            
+            if ($asposeConverter->isConfigured()) {
+                Log::info('🔵 [ChatController] Converting edited template HTML → DOCX', [
+                    'message_id' => $messageId,
+                ]);
+                
+                // Convert HTML → DOCX
+                $tempDocxPath = $asposeConverter->convertHtmlToDocx($htmlPreview);
+                
+                if ($tempDocxPath && file_exists($tempDocxPath)) {
+                    // Generate new file name with timestamp
+                    $templateName = $message->metadata['template_name'] ?? 'template';
+                    $fileInfo = pathinfo($templateName);
+                    $newFileName = ($fileInfo['filename'] ?? 'template') . '_edited_' . time() . '.docx';
+                    
+                    // Save new DOCX to storage
+                    $newPath = 'document-templates/' . $newFileName;
+                    Storage::disk('public')->put($newPath, file_get_contents($tempDocxPath));
+                    
+                    // Get new file URL (convert to relative path)
+                    $newUrl = Storage::disk('public')->url($newPath);
+                    // ✅ FIX: Convert to relative path to avoid protocol issues
+                    if (str_starts_with($newUrl, 'http')) {
+                        $newUrl = preg_replace('#^https?://[^/]+#', '', $newUrl);
+                    }
+                    $newDocxPath = Storage::disk('public')->path($newPath);
+                    
+                    // Clean up temp file
+                    if (file_exists($tempDocxPath)) {
+                        unlink($tempDocxPath);
+                    }
+                    
+                    Log::info('✅ [ChatController] New template DOCX file created from edited HTML', [
+                        'message_id' => $messageId,
+                        'new_file_path' => $newPath,
+                        'new_file_url' => $newUrl,
+                        'file_size' => filesize($newDocxPath),
+                    ]);
+                } else {
+                    throw new \Exception('Converted DOCX file not found');
+                }
+            } else {
+                Log::warning('⚠️ [ChatController] Aspose API not configured, skipping DOCX conversion', [
+                    'message_id' => $messageId,
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('🔴 [ChatController] Failed to convert HTML → DOCX', [
+                'message_id' => $messageId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            // Continue without DOCX conversion - still save HTML preview
+        }
+        
+        // Update message metadata with new HTML preview and new DOCX path
+        $metadata = $message->metadata ?? [];
+        $metadata['template_html'] = $htmlPreview;
+        $metadata['template_html_edited'] = true;
+        $metadata['template_html_edited_at'] = now()->toISOString();
+        
+        // ✅ Update file_path nếu có DOCX mới
+        if ($newDocxPath && $newUrl) {
+            $metadata['template_file_path'] = $newUrl;
+            $metadata['template_file_path_updated'] = true;
+            $metadata['template_file_path_updated_at'] = now()->toISOString();
+            
+            Log::info('✅ [ChatController] Template file_path updated in message metadata', [
+                'message_id' => $messageId,
+                'old_path' => $message->metadata['template_file_path'] ?? null,
+                'new_path' => $newUrl,
+            ]);
+        }
+        
+        $message->metadata = $metadata;
+        $message->save();
+        
+        Log::info('✅ [ChatController] Message template HTML and DOCX updated', [
+            'message_id' => $messageId,
+            'html_length' => strlen($htmlPreview),
+            'docx_updated' => !empty($newDocxPath),
+        ]);
+        
+        return response()->json([
+            'success' => true,
+            'message' => 'Template HTML và file DOCX đã được cập nhật thành công',
+            'docx_updated' => !empty($newDocxPath),
+            'new_file_url' => $newUrl,
+        ]);
+    }
 }
 

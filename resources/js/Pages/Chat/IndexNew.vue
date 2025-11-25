@@ -183,17 +183,24 @@
                                     {{ templateSavingStates[message.id] ? 'Đang lưu...' : (templateEditModes[message.id] ? 'Thoát' : 'Sửa') }}
                                 </button>
                                 
-                                <!-- ✅ Button Tải DOCX -->
+                                <!-- ✅ Button Tải DOCX với loading -->
                                 <button
                                     v-if="message.metadata?.template_file_path"
-                                    @click="downloadTemplate(message.metadata.template_file_path, message.metadata.template_name)"
-                                    class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm font-medium flex items-center gap-2 transition-colors shadow-sm hover:shadow-md"
+                                    @click="downloadTemplateWithSave(message.id)"
+                                    :disabled="templateDownloadingStates[message.id] || templateSavingStates[message.id]"
+                                    class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm font-medium flex items-center gap-2 transition-colors shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
                                     title="Tải template dạng DOCX"
                                 >
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <!-- Loading spinner -->
+                                    <svg v-if="templateDownloadingStates[message.id] || templateSavingStates[message.id]" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    <!-- Download icon -->
+                                    <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                                     </svg>
-                                    Tải DOCX
+                                    {{ templateSavingStates[message.id] ? 'Đang lưu...' : (templateDownloadingStates[message.id] ? 'Đang tải...' : 'Tải DOCX') }}
                                 </button>
                             </div>
                         </div>
@@ -671,6 +678,7 @@ const selectedDocumentType = ref('van_ban_den');
 // ✅ Template edit mode state
 const templateEditModes = ref({});
 const templateSavingStates = ref({}); // Track saving state for each template
+const templateDownloadingStates = ref({}); // Track downloading state for each template
 const templateEditorRefs = ref({});
 const templateContextMenuRefs = ref({});
 
@@ -800,73 +808,61 @@ const toggleTemplateEditMode = async (messageId) => {
         
         if (editorEl && message && message.metadata) {
             const editedHtml = editorEl.innerHTML;
-            const templateId = message.metadata.template_id;
             
-            if (templateId) {
-                // ✅ Show loading state
-                templateSavingStates.value[messageId] = true;
-                
-                // ✅ Call API to update template HTML and regenerate DOCX
-                try {
-                    console.log('[IndexNew] Saving template HTML to server', {
-                        messageId,
-                        templateId,
-                        htmlLength: editedHtml.length,
-                    });
-                    
-                    const response = await fetch(`/api/templates/${templateId}/html-preview`, {
-                        method: 'PUT',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
-                        },
-                        body: JSON.stringify({
-                            html_preview: editedHtml
-                        }),
-                    });
-                    
-                    if (!response.ok) {
-                        const errorData = await response.json().catch(() => ({}));
-                        throw new Error(errorData.error || 'Failed to save template HTML');
-                    }
-                    
-                    const result = await response.json();
-                    console.log('[IndexNew] Template HTML saved successfully', {
-                        messageId,
-                        templateId,
-                        result,
-                        docx_updated: result.docx_updated,
-                        new_file_url: result.new_file_url,
-                    });
-                    
-                    // Update message metadata với HTML đã chỉnh sửa
-                    message.metadata.template_html = editedHtml;
-                    
-                    // ✅ Update file_path nếu có DOCX mới
-                    if (result.docx_updated && result.new_file_url) {
-                        message.metadata.template_file_path = result.new_file_url;
-                        console.log('[IndexNew] Template file_path updated', {
-                            messageId,
-                            new_file_url: result.new_file_url,
-                        });
-                    }
-                    
-                    alert('Nội dung template và file DOCX đã được cập nhật thành công!');
-                } catch (error) {
-                    console.error('[IndexNew] Error saving template HTML:', error);
-                    alert(`Không thể lưu template: ${error.message}`);
-                    return; // Don't exit edit mode if save failed
-                } finally {
-                    // ✅ Hide loading state
-                    templateSavingStates.value[messageId] = false;
-                }
-            } else {
-                // Fallback: Just update frontend state if no template_id
-                message.metadata.template_html = editedHtml;
-                console.log('[IndexNew] Template HTML saved to frontend state only (no template_id)', {
+            // ✅ Show loading state
+            templateSavingStates.value[messageId] = true;
+            
+            // ✅ Call API to update template HTML in message metadata and regenerate DOCX
+            try {
+                console.log('[IndexNew] Saving template HTML to server', {
                     messageId,
                     htmlLength: editedHtml.length,
                 });
+                
+                const response = await fetch(`/api/chat/messages/${messageId}/template-html`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                    },
+                    body: JSON.stringify({
+                        html_preview: editedHtml
+                    }),
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error || 'Failed to save template HTML');
+                }
+                
+                const result = await response.json();
+                console.log('[IndexNew] Template HTML saved successfully', {
+                    messageId,
+                    result,
+                    docx_updated: result.docx_updated,
+                    new_file_url: result.new_file_url,
+                });
+                
+                // Update message metadata với HTML đã chỉnh sửa
+                message.metadata.template_html = editedHtml;
+                
+                // ✅ Update file_path nếu có DOCX mới
+                if (result.docx_updated && result.new_file_url) {
+                    message.metadata.template_file_path = result.new_file_url;
+                    console.log('[IndexNew] Template file_path updated', {
+                        messageId,
+                        new_file_url: result.new_file_url,
+                    });
+                }
+                
+                alert('Nội dung template và file DOCX đã được cập nhật thành công!');
+            } catch (error) {
+                console.error('[IndexNew] Error saving template HTML:', error);
+                alert(`Không thể lưu template: ${error.message}`);
+                return; // Don't exit edit mode if save failed
+            } finally {
+                // ✅ Hide loading state
+                templateSavingStates.value[messageId] = false;
             }
         }
         
@@ -947,6 +943,108 @@ const handleTemplateActionComplete = async ({ originalText, newText, range }, me
     } catch (error) {
         console.error('[IndexNew] Error replacing template text:', error);
         alert('Không thể thay thế văn bản. Vui lòng thử lại.');
+    }
+};
+
+// ✅ Save template before download (if in edit mode or has unsaved changes)
+const saveTemplateBeforeDownload = async (messageId) => {
+    const message = messages.value.find(m => m.id === messageId);
+    if (!message || !message.metadata) return null;
+    
+    const isEditMode = templateEditModes.value[messageId];
+    const editorEl = templateEditorRefs.value[messageId];
+    
+    // Nếu đang edit mode, cần save trước
+    if (isEditMode && editorEl) {
+        const editedHtml = editorEl.innerHTML;
+        
+        // Show saving state
+        templateSavingStates.value[messageId] = true;
+        
+        try {
+            console.log('[IndexNew] Saving template before download', {
+                messageId,
+                htmlLength: editedHtml.length,
+            });
+            
+            const response = await fetch(`/api/chat/messages/${messageId}/template-html`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                },
+                body: JSON.stringify({
+                    html_preview: editedHtml
+                }),
+            });
+            
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error || 'Failed to save template HTML');
+            }
+            
+            const result = await response.json();
+            console.log('[IndexNew] Template saved before download', {
+                messageId,
+                result,
+                docx_updated: result.docx_updated,
+                new_file_url: result.new_file_url,
+            });
+            
+            // Update message metadata
+            message.metadata.template_html = editedHtml;
+            
+            // Update file_path nếu có DOCX mới
+            if (result.docx_updated && result.new_file_url) {
+                message.metadata.template_file_path = result.new_file_url;
+                console.log('[IndexNew] Template file_path updated before download', {
+                    messageId,
+                    new_file_url: result.new_file_url,
+                });
+                
+                return result.new_file_url; // Return new file URL
+            }
+            
+            return message.metadata.template_file_path; // Return current file URL
+        } catch (error) {
+            console.error('[IndexNew] Error saving template before download:', error);
+            throw error; // Re-throw để caller xử lý
+        } finally {
+            templateSavingStates.value[messageId] = false;
+        }
+    }
+    
+    // Nếu không edit mode, return current file path
+    return message.metadata.template_file_path;
+};
+
+// ✅ Download template với auto-save trước
+const downloadTemplateWithSave = async (messageId) => {
+    const message = messages.value.find(m => m.id === messageId);
+    if (!message || !message.metadata) {
+        alert('Không tìm thấy template. Vui lòng thử lại sau.');
+        return;
+    }
+    
+    // Show downloading state
+    templateDownloadingStates.value[messageId] = true;
+    
+    try {
+        // ✅ Step 1: Save nếu đang edit mode
+        const fileUrl = await saveTemplateBeforeDownload(messageId);
+        
+        if (!fileUrl) {
+            throw new Error('Không tìm thấy file template. Vui lòng thử lại sau.');
+        }
+        
+        // ✅ Step 2: Download file
+        await downloadTemplate(fileUrl, message.metadata.template_name);
+        
+    } catch (error) {
+        console.error('[IndexNew] Error in downloadTemplateWithSave:', error);
+        alert(`Không thể tải template: ${error.message}`);
+    } finally {
+        templateDownloadingStates.value[messageId] = false;
     }
 };
 
