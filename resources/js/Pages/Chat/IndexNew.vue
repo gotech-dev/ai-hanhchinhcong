@@ -1253,23 +1253,80 @@ const handleSend = async () => {
                     }
                 }
                 
-                // ✅ FIX: Update assistantMessage with metadata from database
+                // ✅ FIX: Handle metadata from SSE done event first (faster, no DB fetch needed)
+                if (data?.metadata) {
+                    console.log('[IndexNew] Metadata received from SSE done event', {
+                        messageId: assistantMessage.id,
+                        has_template_html: !!data.metadata.template_html,
+                        has_template_preview: !!data.metadata.template_preview,
+                    });
+                    
+                    if (!assistantMessage.metadata) {
+                        assistantMessage.metadata = {};
+                    }
+                    
+                    // Merge metadata from SSE
+                    if (data.metadata.template_html) {
+                        assistantMessage.metadata.template_html = data.metadata.template_html;
+                        assistantMessage.metadata.template_preview = data.metadata.template_preview ?? true;
+                        assistantMessage.metadata.content_type = data.metadata.content_type ?? 'html';
+                        if (data.metadata.template_id) {
+                            assistantMessage.metadata.template_id = data.metadata.template_id;
+                        }
+                        if (data.metadata.template_name) {
+                            assistantMessage.metadata.template_name = data.metadata.template_name;
+                        }
+                        
+                        console.log('[IndexNew] Template HTML metadata set from SSE', {
+                            messageId: assistantMessage.id,
+                            html_length: data.metadata.template_html.length,
+                        });
+                        
+                        // Force reactivity
+                        messages.value = [...messages.value];
+                    }
+                }
+                
+                // ✅ FIX: Update assistantMessage with metadata from database (fallback)
                 if (data?.message_id) {
                     try {
                         const response = await axios.get(`/api/chat/sessions/${currentSession.value.id}/history`);
                         const serverMessages = response.data.messages || [];
                         const serverMessage = serverMessages.find(m => m.id === data.message_id);
                         
-                        if (serverMessage?.metadata?.document && !assistantMessage.metadata?.document) {
+                        if (serverMessage?.metadata) {
                             console.log('[IndexNew] Updating assistantMessage with metadata from database', {
                                 messageId: assistantMessage.id,
-                                metadata: serverMessage.metadata,
+                                has_document: !!serverMessage.metadata.document,
+                                has_template_html: !!serverMessage.metadata.template_html,
                             });
                             
                             if (!assistantMessage.metadata) {
                                 assistantMessage.metadata = {};
                             }
-                            assistantMessage.metadata.document = serverMessage.metadata.document;
+                            
+                            // Update document metadata if not already set
+                            if (serverMessage.metadata.document && !assistantMessage.metadata.document) {
+                                assistantMessage.metadata.document = serverMessage.metadata.document;
+                            }
+                            
+                            // ✅ FIX: Update template_html metadata if not already set from SSE
+                            if (serverMessage.metadata.template_html && !assistantMessage.metadata.template_html) {
+                                assistantMessage.metadata.template_html = serverMessage.metadata.template_html;
+                                assistantMessage.metadata.template_preview = serverMessage.metadata.template_preview ?? true;
+                                assistantMessage.metadata.content_type = serverMessage.metadata.content_type ?? 'html';
+                                if (serverMessage.metadata.template_id) {
+                                    assistantMessage.metadata.template_id = serverMessage.metadata.template_id;
+                                }
+                                if (serverMessage.metadata.template_name) {
+                                    assistantMessage.metadata.template_name = serverMessage.metadata.template_name;
+                                }
+                                
+                                console.log('[IndexNew] Template HTML metadata set from database', {
+                                    messageId: assistantMessage.id,
+                                    html_length: serverMessage.metadata.template_html.length,
+                                });
+                            }
                             
                             // Force reactivity
                             messages.value = [...messages.value];

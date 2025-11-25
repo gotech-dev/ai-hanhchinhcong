@@ -548,6 +548,24 @@ class ChatController extends Controller
                         $sseData['document'] = $documentData;
                     }
                     
+                    // ✅ FIX: Include metadata in SSE response if template_html is present
+                    if (isset($messageMetadata['template_html'])) {
+                        $sseData['metadata'] = [
+                            'template_html' => $messageMetadata['template_html'],
+                            'template_preview' => $messageMetadata['template_preview'] ?? true,
+                            'content_type' => $messageMetadata['content_type'] ?? 'html',
+                            'template_id' => $messageMetadata['template_id'] ?? null,
+                            'template_name' => $messageMetadata['template_name'] ?? null,
+                        ];
+                        
+                        Log::info('✅ [ChatController] Including template_html metadata in SSE response', [
+                            'session_id' => $session->id,
+                            'message_id' => $assistantMessage->id,
+                            'template_id' => $messageMetadata['template_id'] ?? null,
+                            'html_length' => strlen($messageMetadata['template_html']),
+                        ]);
+                    }
+                    
                     $jsonData = json_encode($sseData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                     echo "data: " . $jsonData . "\n\n";
                     if (ob_get_level() > 0) {
@@ -726,6 +744,24 @@ class ChatController extends Controller
                             $sseData['document'] = null;
                             Log::warning('⚠️ [ChatController] No document data to include in SSE response', [
                                 'session_id' => $session->id,
+                            ]);
+                        }
+                        
+                        // ✅ FIX: Include metadata in SSE response if template_html is present
+                        if (isset($messageMetadata['template_html'])) {
+                            $sseData['metadata'] = [
+                                'template_html' => $messageMetadata['template_html'],
+                                'template_preview' => $messageMetadata['template_preview'] ?? true,
+                                'content_type' => $messageMetadata['content_type'] ?? 'html',
+                                'template_id' => $messageMetadata['template_id'] ?? null,
+                                'template_name' => $messageMetadata['template_name'] ?? null,
+                            ];
+                            
+                            Log::info('✅ [ChatController] Including template_html metadata in SSE response', [
+                                'session_id' => $session->id,
+                                'message_id' => $assistantMessage->id,
+                                'template_id' => $messageMetadata['template_id'] ?? null,
+                                'html_length' => strlen($messageMetadata['template_html']),
                             ]);
                         }
                         
