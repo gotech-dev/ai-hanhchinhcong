@@ -3193,6 +3193,7 @@ class SmartAssistantEngine
                     'content_type' => 'html',
                     'template_id' => $template->id,
                     'template_name' => $template->name,
+                    'template_file_path' => $template->file_path, // ✅ FIX: Add file path for download
                 ],
             ];
             

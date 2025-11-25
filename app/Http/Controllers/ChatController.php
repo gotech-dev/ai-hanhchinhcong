@@ -520,6 +520,10 @@ class ChatController extends Controller
                         if (isset($result['metadata']['template_name'])) {
                             $messageMetadata['template_name'] = $result['metadata']['template_name'];
                         }
+                        // ✅ FIX: Add template_file_path for download
+                        if (isset($result['metadata']['template_file_path'])) {
+                            $messageMetadata['template_file_path'] = $result['metadata']['template_file_path'];
+                        }
                         
                         Log::info('✅ [ChatController] Adding template_html to message metadata', [
                             'session_id' => $session->id,
@@ -556,6 +560,7 @@ class ChatController extends Controller
                             'content_type' => $messageMetadata['content_type'] ?? 'html',
                             'template_id' => $messageMetadata['template_id'] ?? null,
                             'template_name' => $messageMetadata['template_name'] ?? null,
+                            'template_file_path' => $messageMetadata['template_file_path'] ?? null, // ✅ FIX: Add for download
                         ];
                         
                         Log::info('✅ [ChatController] Including template_html metadata in SSE response', [
@@ -710,6 +715,10 @@ class ChatController extends Controller
                             if (isset($result['metadata']['template_name'])) {
                                 $messageMetadata['template_name'] = $result['metadata']['template_name'];
                             }
+                            // ✅ FIX: Add template_file_path for download
+                            if (isset($result['metadata']['template_file_path'])) {
+                                $messageMetadata['template_file_path'] = $result['metadata']['template_file_path'];
+                            }
                             
                             Log::info('✅ [ChatController] Adding template_html to message metadata', [
                                 'session_id' => $session->id,
@@ -755,6 +764,7 @@ class ChatController extends Controller
                                 'content_type' => $messageMetadata['content_type'] ?? 'html',
                                 'template_id' => $messageMetadata['template_id'] ?? null,
                                 'template_name' => $messageMetadata['template_name'] ?? null,
+                                'template_file_path' => $messageMetadata['template_file_path'] ?? null, // ✅ FIX: Add for download
                             ];
                             
                             Log::info('✅ [ChatController] Including template_html metadata in SSE response', [

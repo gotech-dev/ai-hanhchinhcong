@@ -155,13 +155,76 @@
                         </div>
                     </div>
                     
-                    <!-- ✅ MỚI: Hiển thị Template HTML Preview nếu có -->
+                    <!-- ✅ MỚI: Hiển thị Template HTML Preview nếu có (giống DocumentPreview) -->
                     <div
                         v-if="message.sender === 'assistant' && message.metadata?.template_preview"
-                        class="template-preview mt-4 p-4 bg-white border border-gray-200 rounded-lg"
+                        class="template-preview bg-white border border-gray-200 rounded-lg shadow-sm p-6 my-4"
                     >
-                        <div class="mb-2 text-sm font-semibold text-gray-700">📄 Template Preview:</div>
-                        <div class="docx-preview" v-html="message.metadata.template_html || message.content"></div>
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-lg font-semibold text-gray-900">📄 Template Preview</h3>
+                            <div class="flex gap-2">
+                                <!-- ✅ Button Sửa -->
+                                <button
+                                    v-if="message.metadata?.template_html"
+                                    @click="toggleTemplateEditMode(message.id)"
+                                    class="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm font-medium flex items-center gap-2 transition-colors shadow-sm hover:shadow-md"
+                                    :title="templateEditModes[message.id] ? 'Thoát chế độ chỉnh sửa' : 'Chỉnh sửa trực tiếp'"
+                                >
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                    </svg>
+                                    {{ templateEditModes[message.id] ? 'Thoát' : 'Sửa' }}
+                                </button>
+                                
+                                <!-- ✅ Button Tải DOCX -->
+                                <a
+                                    v-if="message.metadata?.template_file_path"
+                                    :href="message.metadata.template_file_path"
+                                    download
+                                    class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm font-medium flex items-center gap-2 transition-colors shadow-sm hover:shadow-md no-underline"
+                                    title="Tải template dạng DOCX"
+                                >
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                    Tải DOCX
+                                </a>
+                            </div>
+                        </div>
+                        
+                        <!-- ✅ Hint đúng: hướng dẫn sử dụng button Sửa -->
+                        <div v-if="message.metadata?.template_html" class="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2">
+                            <svg class="w-5 h-5 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span class="text-sm text-blue-700">
+                                <strong>Hướng dẫn:</strong> Bấm nút <strong>"Sửa"</strong> để chỉnh sửa. Sau đó <strong>bôi đen đoạn văn</strong> bạn muốn sửa và <strong>bấm chuột phải</strong> để mở menu AI (Viết lại, Tóm tắt, Mở rộng, Sửa lỗi)
+                            </span>
+                        </div>
+                        
+                        <!-- ✅ View mode: Hiển thị HTML preview -->
+                        <div 
+                            v-if="!templateEditModes[message.id] && message.metadata?.template_html" 
+                            class="document-content docx-preview"
+                            v-html="message.metadata.template_html"
+                        ></div>
+                        
+                        <!-- ✅ Edit mode: contenteditable với AiContextMenu -->
+                        <div v-if="templateEditModes[message.id]" class="document-content relative">
+                            <div 
+                                :ref="el => templateEditorRefs[message.id] = el"
+                                class="docx-preview edit-mode min-h-[400px] border-2 border-green-300 rounded"
+                                contenteditable="true"
+                                @contextmenu="handleTemplateContextMenu($event, message.id)"
+                                v-html="message.metadata.template_html"
+                            ></div>
+                            
+                            <!-- AI Context Menu -->
+                            <AiContextMenu 
+                                :ref="el => templateContextMenuRefs[message.id] = el"
+                                @action-complete="handleTemplateActionComplete($event, message.id)"
+                            />
+                        </div>
                     </div>
                     
                     <!-- ✅ MỚI: Hiển thị DocumentPreview nếu có document metadata -->
@@ -457,6 +520,7 @@ import DocumentList from '../../Components/DocumentList.vue';
 import DocumentSearchResults from '../../Components/DocumentSearchResults.vue';
 import DocumentClassificationResult from '../../Components/DocumentClassificationResult.vue';
 import TemplateCard from '../../Components/TemplateCard.vue';
+import AiContextMenu from '../../Components/AiContextMenu.vue';
 
 const props = defineProps({
     auth: Object,
@@ -597,6 +661,11 @@ const classificationResult = ref(null);
 const showDocumentTypeSelector = ref(false);
 const selectedDocumentType = ref('van_ban_den');
 
+// ✅ Template edit mode state
+const templateEditModes = ref({});
+const templateEditorRefs = ref({});
+const templateContextMenuRefs = ref({});
+
 // Computed: Check if current assistant is document_management
 const isDocumentManagement = computed(() => {
     return currentAssistant.value?.assistant_type === 'document_management';
@@ -710,6 +779,70 @@ const handleCreateFromTemplate = async (messageText) => {
     // Trigger send message tự động
     await nextTick();
     await handleSend();
+};
+
+// ✅ Toggle template edit mode
+const toggleTemplateEditMode = (messageId) => {
+    templateEditModes.value[messageId] = !templateEditModes.value[messageId];
+    
+    // Nếu thoát edit mode, reset ref
+    if (!templateEditModes.value[messageId]) {
+        delete templateEditorRefs.value[messageId];
+        delete templateContextMenuRefs.value[messageId];
+    }
+    
+    // Force reactivity
+    messages.value = [...messages.value];
+};
+
+// ✅ Handle context menu cho template editor
+const handleTemplateContextMenu = (event, messageId) => {
+    const selection = window.getSelection();
+    const selectedText = selection.toString().trim();
+    
+    if (selectedText && selectedText.length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        const range = selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
+        const contextMenu = templateContextMenuRefs.value[messageId];
+        
+        if (contextMenu && contextMenu.showContextMenu) {
+            contextMenu.showContextMenu(event, selectedText, range);
+        }
+    }
+};
+
+// ✅ Handle AI action complete (rewrite, summarize, etc.)
+const handleTemplateActionComplete = async ({ originalText, newText, range }, messageId) => {
+    const editorEl = templateEditorRefs.value[messageId];
+    if (!editorEl || !range) return;
+    
+    try {
+        // Replace selected text with new text
+        range.deleteContents();
+        const textNode = document.createTextNode(newText);
+        range.insertNode(textNode);
+        
+        // Update message metadata with edited HTML
+        const message = messages.value.find(m => m.id === messageId);
+        if (message && editorEl.innerHTML) {
+            if (!message.metadata) {
+                message.metadata = {};
+            }
+            message.metadata.template_html = editorEl.innerHTML;
+            messages.value = [...messages.value];
+        }
+        
+        console.log('[IndexNew] Template text replaced', {
+            messageId,
+            originalLength: originalText.length,
+            newLength: newText.length,
+        });
+    } catch (error) {
+        console.error('[IndexNew] Error replacing template text:', error);
+        alert('Không thể thay thế văn bản. Vui lòng thử lại.');
+    }
 };
 
 const handleAssistantSelect = async (assistantId) => {
@@ -1276,10 +1409,15 @@ const handleSend = async () => {
                         if (data.metadata.template_name) {
                             assistantMessage.metadata.template_name = data.metadata.template_name;
                         }
+                        // ✅ FIX: Add template_file_path for download button
+                        if (data.metadata.template_file_path) {
+                            assistantMessage.metadata.template_file_path = data.metadata.template_file_path;
+                        }
                         
                         console.log('[IndexNew] Template HTML metadata set from SSE', {
                             messageId: assistantMessage.id,
                             html_length: data.metadata.template_html.length,
+                            has_file_path: !!data.metadata.template_file_path,
                         });
                         
                         // Force reactivity
@@ -1321,10 +1459,15 @@ const handleSend = async () => {
                                 if (serverMessage.metadata.template_name) {
                                     assistantMessage.metadata.template_name = serverMessage.metadata.template_name;
                                 }
+                                // ✅ FIX: Add template_file_path for download button
+                                if (serverMessage.metadata.template_file_path) {
+                                    assistantMessage.metadata.template_file_path = serverMessage.metadata.template_file_path;
+                                }
                                 
                                 console.log('[IndexNew] Template HTML metadata set from database', {
                                     messageId: assistantMessage.id,
                                     html_length: serverMessage.metadata.template_html.length,
+                                    has_file_path: !!serverMessage.metadata.template_file_path,
                                 });
                             }
                             
