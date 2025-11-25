@@ -42,10 +42,13 @@ return [
     |--------------------------------------------------------------------------
     |
     | The timeout may be used to specify the maximum number of seconds to wait
-    | for a response. By default, the client will time out after 30 seconds.
+    | for a response. By default, the client will time out after 60 seconds.
+    | 
+    | For complex operations like template placeholder generation, longer timeout
+    | may be needed. You can override this in .env with OPENAI_REQUEST_TIMEOUT.
     */
 
-    'request_timeout' => env('OPENAI_REQUEST_TIMEOUT', 30),
+    'request_timeout' => env('OPENAI_REQUEST_TIMEOUT', 60),
 ];
 
 

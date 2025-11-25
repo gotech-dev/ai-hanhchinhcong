@@ -180,6 +180,13 @@ class IntentRecognizer
             $basePrompt .= "   - Ví dụ: \"tìm văn bản về ngân sách\", \"tìm công văn số 123\", \"tìm tất cả văn bản đến\"\n\n";
             $basePrompt .= "3. **get_reminders**: User muốn xem nhắc nhở\n";
             $basePrompt .= "   - Ví dụ: \"nhắc nhở\", \"văn bản cần xử lý\", \"văn bản sắp đến hạn\", \"văn bản quá hạn\"\n\n";
+        } elseif ($assistantType === 'report_assistant') {
+            // ✅ FIX: report_assistant chỉ có create_report intent
+            $basePrompt .= "1. **create_report**: User muốn tạo báo cáo/tài liệu mới từ template\n";
+            $basePrompt .= "   - Ví dụ: \"tạo báo cáo\", \"làm báo cáo cho tôi\", \"tạo tài liệu\", \"tự điền data mẫu\"\n";
+            $basePrompt .= "   - **QUAN TRỌNG**: \"Tạo văn bản từ template\", \"Tạo từ mẫu\" → LUÔN là create_report (KHÔNG phải draft_document)\n";
+            $basePrompt .= "   - Context: User đang cung cấp thông tin (thời gian, nội dung, đối tượng, v.v.) → vẫn là create_report\n";
+            $basePrompt .= "   - **LƯU Ý**: report_assistant KHÔNG có draft_document intent, chỉ có create_report\n\n";
         } else {
             $basePrompt .= "1. **create_report**: User muốn tạo báo cáo/tài liệu mới\n";
             $basePrompt .= "   - Ví dụ: \"tạo báo cáo\", \"làm báo cáo cho tôi\", \"tạo tài liệu\", \"tự điền data mẫu\"\n";
@@ -227,10 +234,16 @@ class IntentRecognizer
         
         $basePrompt .= "**YÊU CẦU CẦN WORKFLOW (draft_document/create_report) - CẦN trigger steps:**\n";
         if ($assistantType === 'document_drafting') {
-            $basePrompt .= "- Yêu cầu tạo văn bản: \"Tôi muốn soạn thảo công văn\", \"Giúp tôi tạo quyết định\"\n";
-            $basePrompt .= "- Yêu cầu soạn thảo: \"Soạn thảo tờ trình\", \"Làm biên bản\"\n";
+            $basePrompt .= "- Yêu cầu tạo văn bản: \"Tôi muốn soạn thảo công văn\", \"Giúp tôi tạo quyết định\" → draft_document\n";
+            $basePrompt .= "- Yêu cầu soạn thảo: \"Soạn thảo tờ trình\", \"Làm biên bản\" → draft_document\n";
+        } elseif ($assistantType === 'report_assistant') {
+            // ✅ FIX: report_assistant chỉ có create_report
+            $basePrompt .= "- Yêu cầu tạo báo cáo: \"Tôi muốn tạo báo cáo\", \"Làm báo cáo thường niên\" → create_report\n";
+            $basePrompt .= "- Yêu cầu tạo từ template: \"Tạo văn bản từ template\", \"Tạo từ mẫu\" → create_report (KHÔNG phải draft_document)\n";
+            $basePrompt .= "- **QUAN TRỌNG**: report_assistant KHÔNG có draft_document intent, tất cả yêu cầu tạo → create_report\n";
+        } else {
+            $basePrompt .= "- Yêu cầu tạo báo cáo: \"Tôi muốn tạo báo cáo\", \"Làm báo cáo thường niên\" → create_report\n";
         }
-        $basePrompt .= "- Yêu cầu tạo báo cáo: \"Tôi muốn tạo báo cáo\", \"Làm báo cáo thường niên\"\n";
         $basePrompt .= "- Yêu cầu cụ thể cần nhiều bước: \"Tôi muốn viết sách\", \"Tạo kế hoạch dự án\"\n";
         $basePrompt .= "- Yêu cầu có từ khóa: \"tạo\", \"soạn thảo\", \"làm\", \"viết\" + tên văn bản/báo cáo\n\n";
         
@@ -239,7 +252,14 @@ class IntentRecognizer
         $basePrompt .= "- Nếu bot đang hỏi thông tin (\"Bạn cần gì?\") → User trả lời → Intent phụ thuộc vào context\n";
         $basePrompt .= "- Nếu user đang cung cấp chi tiết cho việc tạo báo cáo → create_report\n";
         $basePrompt .= "- Từ \"mẫu\", \"sample\", \"tự điền\" là context, không thay đổi intent\n";
-        $basePrompt .= "- **QUY TẮC VÀNG:** Nếu user chỉ HỎI thông tin → ask_question. Nếu user muốn TẠO/TẠO RA cái gì đó → workflow intent (draft_document/create_report)\n\n";
+        if ($assistantType === 'report_assistant') {
+            $basePrompt .= "- **QUY TẮC VÀNG CHO report_assistant:** Tất cả yêu cầu tạo/tạo ra → create_report (KHÔNG phải draft_document)\n";
+            $basePrompt .= "- \"Tạo văn bản từ template\" → create_report (KHÔNG phải draft_document)\n";
+            $basePrompt .= "- \"Tạo từ mẫu\" → create_report (KHÔNG phải draft_document)\n";
+        } else {
+            $basePrompt .= "- **QUY TẮC VÀNG:** Nếu user chỉ HỎI thông tin → ask_question. Nếu user muốn TẠO/TẠO RA cái gì đó → workflow intent (draft_document/create_report)\n";
+        }
+        $basePrompt .= "\n";
         
         $basePrompt .= "Trả về JSON format: {\"type\": \"intent_type\", \"entity\": {...}, \"confidence\": 0.0-1.0}";
         

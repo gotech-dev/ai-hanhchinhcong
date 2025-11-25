@@ -747,17 +747,23 @@ class AdminController extends Controller
                 }
                 
                 if ($finalExtension === 'docx') {
-                    try {
-                        // Resolve TemplatePlaceholderGenerator service
-                        $placeholderGenerator = app(\App\Services\TemplatePlaceholderGenerator::class);
-                        
-                        Log::info('🔵 [AdminController] Starting placeholder generation/extraction', [
-                            'file' => $fileName,
-                            'full_path' => $fullPath,
-                        ]);
-                        
-                        // Try to generate placeholders (will extract existing if present)
-                        $placeholders = $placeholderGenerator->generatePlaceholders($fullPath);
+                    // ✅ FIX: Skip placeholder generation for report_assistant
+                    // report_assistant uses rewrite feature (bôi đen + chuột phải) instead of placeholders
+                    $shouldGeneratePlaceholders = $assistant->assistant_type !== 'report_assistant';
+                    
+                    if ($shouldGeneratePlaceholders) {
+                        try {
+                            // Resolve TemplatePlaceholderGenerator service
+                            $placeholderGenerator = app(\App\Services\TemplatePlaceholderGenerator::class);
+                            
+                            Log::info('🔵 [AdminController] Starting placeholder generation/extraction', [
+                                'file' => $fileName,
+                                'full_path' => $fullPath,
+                                'assistant_type' => $assistant->assistant_type,
+                            ]);
+                            
+                            // Try to generate placeholders (will extract existing if present)
+                            $placeholders = $placeholderGenerator->generatePlaceholders($fullPath);
                         
                         if (!empty($placeholders)) {
                             $metadata['placeholders'] = array_keys($placeholders);
@@ -796,6 +802,13 @@ class AdminController extends Controller
                                 'error' => $fallbackException->getMessage(),
                             ]);
                         }
+                    } else {
+                        // ✅ FIX: Skip placeholder generation for report_assistant
+                        Log::info('⏭️ [AdminController] Skipping placeholder generation for report_assistant', [
+                            'file' => $fileName,
+                            'assistant_type' => $assistant->assistant_type,
+                            'reason' => 'report_assistant uses rewrite feature (bôi đen + chuột phải) instead of placeholders',
+                        ]);
                     }
                 }
                 

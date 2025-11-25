@@ -234,67 +234,118 @@ class TemplatePlaceholderGenerator
      */
     protected function identifyFillablePositionsWithAI(string $text, array $structure): array
     {
-        try {
-            $prompt = $this->buildAIPrompt($text);
-            
-            Log::info('🔵 [TemplatePlaceholderGenerator] Calling AI to identify fillable positions', [
-                'text_length' => strlen($text),
-                'text_preview' => substr($text, 0, 500),
-            ]);
-            
-            $response = OpenAI::chat()->create([
-                'model' => config('openai.model', 'gpt-4o-mini'),
-                'messages' => [
-                    [
-                        'role' => 'system',
-                        'content' => 'Bạn là chuyên gia phân tích template văn bản hành chính Việt Nam. Nhiệm vụ của bạn là nhận diện các vị trí cần điền trong template và tạo placeholders phù hợp.',
-                    ],
-                    [
-                        'role' => 'user',
-                        'content' => $prompt,
-                    ],
-                ],
-                'temperature' => 0.3,
-                'response_format' => ['type' => 'json_object'],
-            ]);
-            
-            $result = json_decode($response->choices[0]->message->content, true);
-            
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                Log::warning('⚠️ [TemplatePlaceholderGenerator] Failed to parse AI response', [
-                    'response' => $response->choices[0]->message->content,
+        $maxRetries = 2;
+        $retryDelay = 2; // seconds
+        
+        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+            try {
+                $prompt = $this->buildAIPrompt($text);
+                
+                Log::info('🔵 [TemplatePlaceholderGenerator] Calling AI to identify fillable positions', [
+                    'text_length' => strlen($text),
+                    'text_preview' => substr($text, 0, 500),
+                    'attempt' => $attempt,
+                    'max_retries' => $maxRetries,
                 ]);
-                return [];
-            }
-            
-            // Parse AI response
-            $mappings = [];
-            if (isset($result['placeholders']) && is_array($result['placeholders'])) {
-                foreach ($result['placeholders'] as $item) {
-                    if (isset($item['original_text']) && isset($item['placeholder_key'])) {
-                        $originalText = trim($item['original_text']);
-                        $placeholderKey = $this->normalizePlaceholderKey($item['placeholder_key']);
-                        
-                        if (!empty($originalText) && !empty($placeholderKey)) {
-                            $mappings[$originalText] = $placeholderKey;
+                
+                // ✅ FIX: Use longer timeout for template analysis (60 seconds)
+                $timeout = config('openai.request_timeout', 60);
+                
+                $response = OpenAI::chat()->create([
+                    'model' => config('openai.model', 'gpt-4o-mini'),
+                    'messages' => [
+                        [
+                            'role' => 'system',
+                            'content' => 'Bạn là chuyên gia phân tích template văn bản hành chính Việt Nam. Nhiệm vụ của bạn là nhận diện các vị trí cần điền trong template và tạo placeholders phù hợp.',
+                        ],
+                        [
+                            'role' => 'user',
+                            'content' => $prompt,
+                        ],
+                    ],
+                    'temperature' => 0.3,
+                    'response_format' => ['type' => 'json_object'],
+                    'timeout' => $timeout, // ✅ FIX: Explicit timeout
+                ]);
+                
+                $result = json_decode($response->choices[0]->message->content, true);
+                
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    Log::warning('⚠️ [TemplatePlaceholderGenerator] Failed to parse AI response', [
+                        'response' => $response->choices[0]->message->content,
+                        'attempt' => $attempt,
+                    ]);
+                    
+                    // If last attempt, return empty
+                    if ($attempt >= $maxRetries) {
+                        return [];
+                    }
+                    continue; // Retry
+                }
+                
+                // Parse AI response
+                $mappings = [];
+                if (isset($result['placeholders']) && is_array($result['placeholders'])) {
+                    foreach ($result['placeholders'] as $item) {
+                        if (isset($item['original_text']) && isset($item['placeholder_key'])) {
+                            $originalText = trim($item['original_text']);
+                            $placeholderKey = $this->normalizePlaceholderKey($item['placeholder_key']);
+                            
+                            if (!empty($originalText) && !empty($placeholderKey)) {
+                                $mappings[$originalText] = $placeholderKey;
+                            }
                         }
                     }
                 }
+                
+                Log::info('✅ [TemplatePlaceholderGenerator] AI identified fillable positions', [
+                    'mappings_count' => count($mappings),
+                    'mappings' => $mappings,
+                    'attempt' => $attempt,
+                ]);
+                
+                return $mappings; // Success!
+                
+            } catch (\Exception $e) {
+                Log::error('❌ [TemplatePlaceholderGenerator] Failed to identify fillable positions with AI', [
+                    'error' => $e->getMessage(),
+                    'attempt' => $attempt,
+                    'max_retries' => $maxRetries,
+                    'is_timeout' => str_contains($e->getMessage(), 'timeout') || str_contains($e->getMessage(), 'timed out'),
+                ]);
+                
+                // ✅ FIX: Retry on timeout or connection errors
+                if ($attempt < $maxRetries) {
+                    $isRetryable = str_contains($e->getMessage(), 'timeout') 
+                        || str_contains($e->getMessage(), 'timed out')
+                        || str_contains($e->getMessage(), 'Connection')
+                        || str_contains($e->getMessage(), 'cURL error');
+                    
+                    if ($isRetryable) {
+                        Log::info('🔄 [TemplatePlaceholderGenerator] Retrying after error', [
+                            'attempt' => $attempt,
+                            'next_attempt' => $attempt + 1,
+                            'retry_delay' => $retryDelay,
+                        ]);
+                        
+                        sleep($retryDelay);
+                        continue; // Retry
+                    }
+                }
+                
+                // If last attempt or non-retryable error, return empty
+                if ($attempt >= $maxRetries) {
+                    return [];
+                }
             }
-            
-            Log::info('✅ [TemplatePlaceholderGenerator] AI identified fillable positions', [
-                'mappings_count' => count($mappings),
-                'mappings' => $mappings,
-            ]);
-            
-            return $mappings;
-        } catch (\Exception $e) {
-            Log::error('❌ [TemplatePlaceholderGenerator] Failed to identify fillable positions with AI', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-            return [];
         }
+        
+        // If all retries failed
+        Log::error('❌ [TemplatePlaceholderGenerator] All retry attempts failed', [
+            'max_retries' => $maxRetries,
+        ]);
+        
+        return [];
     }
     
     /**

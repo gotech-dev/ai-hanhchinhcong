@@ -3093,7 +3093,7 @@ class SmartAssistantEngine
                 ];
             }
             
-            Log::info('🔵 [handleShowReportTemplate] SIMPLIFIED FLOW - Show template preview immediately', [
+            Log::info('🔵 [handleShowReportTemplate] Show template HTML preview', [
                 'assistant_id' => $assistant->id,
                 'template_id' => $template->id,
                 'template_name' => $template->name,
@@ -3105,15 +3105,96 @@ class SmartAssistantEngine
                 'collected_data' => [],
             ]);
             
-            // ✅ SIMPLIFIED: Generate document directly from template (no AI content generation)
-            // Pass __skip_ai__ flag to keep original template content
-            return $this->generateDocumentFromTemplate(
-                $template,
-                ['__skip_ai__' => true], // Skip AI generation - giữ nguyên nội dung template gốc
-                $session,
-                $assistant,
-                $streamCallback
-            );
+            // ✅ FIX: Get HTML preview from template metadata (same as "Xem Mẫu" button)
+            $htmlPreview = $template->metadata['html_preview'] ?? null;
+            
+            // If no HTML preview in metadata, try to generate it
+            if (!$htmlPreview) {
+                Log::warning('⚠️ [handleShowReportTemplate] No HTML preview in template metadata, trying to generate', [
+                    'template_id' => $template->id,
+                ]);
+                
+                try {
+                    // Get template file path
+                    $templateUrl = $template->file_path;
+                    $parsedUrl = parse_url($templateUrl);
+                    $path = $parsedUrl['path'] ?? $templateUrl;
+                    $filePath = preg_replace('#^/storage/#', '', $path);
+                    $filePath = ltrim($filePath, '/');
+                    $templatePath = \Storage::disk('public')->path($filePath);
+                    
+                    if (!file_exists($templatePath)) {
+                        throw new \Exception("Template file not found: {$templatePath}");
+                    }
+                    
+                    // Convert template to HTML using Aspose
+                    $asposeConverter = app(\App\Services\AsposeWordsConverter::class);
+                    
+                    if ($asposeConverter->isConfigured()) {
+                        if ($template->file_type === 'pdf') {
+                            $htmlPreview = $asposeConverter->convertPdfToHtml($templatePath);
+                        } elseif ($template->file_type === 'docx') {
+                            $htmlPreview = $asposeConverter->convertDocxToHtml($templatePath);
+                        } else {
+                            throw new \Exception("Unsupported file type: {$template->file_type}");
+                        }
+                        
+                        // Cache HTML to metadata
+                        $metadata = $template->metadata ?? [];
+                        $metadata['html_preview'] = $htmlPreview;
+                        $metadata['html_preview_cached_at'] = now()->toISOString();
+                        $template->metadata = $metadata;
+                        $template->save();
+                        
+                        Log::info('✅ [handleShowReportTemplate] HTML preview generated and cached', [
+                            'template_id' => $template->id,
+                            'html_length' => strlen($htmlPreview),
+                        ]);
+                    } else {
+                        throw new \Exception('Aspose API not configured');
+                    }
+                } catch (\Exception $e) {
+                    Log::error('❌ [handleShowReportTemplate] Failed to generate HTML preview', [
+                        'template_id' => $template->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                    
+                    $errorResponse = "Xin lỗi, không thể tải preview template. Vui lòng đảm bảo Aspose API đã được cấu hình.";
+                    
+                    if ($streamCallback) {
+                        $streamCallback($errorResponse);
+                    }
+                    
+                    return [
+                        'response' => $errorResponse,
+                        'workflow_state' => null,
+                    ];
+                }
+            }
+            
+            // ✅ Return HTML preview in metadata (same format as "Xem Mẫu" button)
+            $response = "Đây là mẫu template bạn có thể sử dụng để tạo văn bản mới.";
+            
+            if ($streamCallback) {
+                $streamCallback($response);
+            }
+            
+            Log::info('✅ [handleShowReportTemplate] Returning HTML preview', [
+                'template_id' => $template->id,
+                'html_length' => strlen($htmlPreview),
+            ]);
+            
+            return [
+                'response' => $response,
+                'workflow_state' => null,
+                'metadata' => [
+                    'template_preview' => true,
+                    'template_html' => $htmlPreview,
+                    'content_type' => 'html',
+                    'template_id' => $template->id,
+                    'template_name' => $template->name,
+                ],
+            ];
             
         } catch (\Exception $e) {
             Log::error('❌ [handleShowReportTemplate] Error', [

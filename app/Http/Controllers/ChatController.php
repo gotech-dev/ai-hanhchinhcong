@@ -503,6 +503,31 @@ class ChatController extends Controller
                     // ✅ PHASE 2: Use accumulated response message (đã được stream)
                     $finalResponse = $responseMessage ?: $result['response'];
                     
+                    // ✅ FIX: Build metadata including template_html if present
+                    $messageMetadata = [
+                        'document' => $documentData,
+                        'workflow_state' => $result['workflow_state'] ?? null,
+                    ];
+                    
+                    // ✅ FIX: Add template_html from result metadata if present
+                    if (isset($result['metadata']['template_html'])) {
+                        $messageMetadata['template_html'] = $result['metadata']['template_html'];
+                        $messageMetadata['template_preview'] = $result['metadata']['template_preview'] ?? true;
+                        $messageMetadata['content_type'] = $result['metadata']['content_type'] ?? 'html';
+                        if (isset($result['metadata']['template_id'])) {
+                            $messageMetadata['template_id'] = $result['metadata']['template_id'];
+                        }
+                        if (isset($result['metadata']['template_name'])) {
+                            $messageMetadata['template_name'] = $result['metadata']['template_name'];
+                        }
+                        
+                        Log::info('✅ [ChatController] Adding template_html to message metadata', [
+                            'session_id' => $session->id,
+                            'template_id' => $result['metadata']['template_id'] ?? null,
+                            'html_length' => strlen($result['metadata']['template_html']),
+                        ]);
+                    }
+                    
                     // Save assistant message
                     $assistantMessage = ChatMessage::create([
                         'chat_session_id' => $session->id,
@@ -510,10 +535,7 @@ class ChatController extends Controller
                         'content' => $finalResponse,
                         'message_type' => 'text',
                         'created_at' => now(),
-                        'metadata' => [
-                            'document' => $documentData,
-                            'workflow_state' => $result['workflow_state'] ?? null,
-                        ],
+                        'metadata' => $messageMetadata,
                     ]);
                     
                     // Send completion event
@@ -653,6 +675,31 @@ class ChatController extends Controller
                         // ✅ PHASE 2: Use accumulated response message (đã được stream)
                         $finalResponse = $responseMessage ?: $result['response'];
                         
+                        // ✅ FIX: Build metadata including template_html if present
+                        $messageMetadata = [
+                            'document' => $documentData,
+                            'workflow_state' => $result['workflow_state'] ?? null,
+                        ];
+                        
+                        // ✅ FIX: Add template_html from result metadata if present
+                        if (isset($result['metadata']['template_html'])) {
+                            $messageMetadata['template_html'] = $result['metadata']['template_html'];
+                            $messageMetadata['template_preview'] = $result['metadata']['template_preview'] ?? true;
+                            $messageMetadata['content_type'] = $result['metadata']['content_type'] ?? 'html';
+                            if (isset($result['metadata']['template_id'])) {
+                                $messageMetadata['template_id'] = $result['metadata']['template_id'];
+                            }
+                            if (isset($result['metadata']['template_name'])) {
+                                $messageMetadata['template_name'] = $result['metadata']['template_name'];
+                            }
+                            
+                            Log::info('✅ [ChatController] Adding template_html to message metadata', [
+                                'session_id' => $session->id,
+                                'template_id' => $result['metadata']['template_id'] ?? null,
+                                'html_length' => strlen($result['metadata']['template_html']),
+                            ]);
+                        }
+                        
                         // Save assistant message với document metadata
                         $assistantMessage = ChatMessage::create([
                             'chat_session_id' => $session->id,
@@ -660,10 +707,7 @@ class ChatController extends Controller
                             'content' => $finalResponse,
                             'message_type' => 'text',
                             'created_at' => now(),
-                            'metadata' => [
-                                'document' => $documentData,
-                                'workflow_state' => $result['workflow_state'] ?? null,
-                            ],
+                            'metadata' => $messageMetadata,
                         ]);
                         
                         // Send completion event with document data
