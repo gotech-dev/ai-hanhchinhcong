@@ -47,6 +47,16 @@
             </div>
         </div>
         
+        <!-- ✅ Hint hiển thị bên trên khung preview HTML (luôn hiển thị khi có preview) -->
+        <div v-if="docxPreviewHtml && !isGenerating" class="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2">
+            <svg class="w-5 h-5 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span class="text-sm text-blue-700">
+                <strong>Hướng dẫn:</strong> Bấm nút <strong>"Sửa"</strong> để chỉnh sửa. Sau đó <strong>bôi đen đoạn văn</strong> bạn muốn sửa và <strong>bấm chuột phải</strong> để mở menu AI (Viết lại, Tóm tắt, Mở rộng, Sửa lỗi)
+            </span>
+        </div>
+        
         <!-- ✅ FIX: Tách 2 div riêng để tránh v-html re-render khi edit -->
         <!-- View mode: Dùng v-html -->
         <div 
@@ -55,11 +65,20 @@
             v-html="docxPreviewHtml"
         ></div>
         
-        <!-- Edit mode: Use RichTextEditor component -->
-        <div v-if="isEditMode" class="document-content">
-            <RichTextEditor 
-                v-model="editedHtml"
-                class="min-h-[400px]"
+        <!-- Edit mode: Use contenteditable with AI Context Menu -->
+        <div v-if="isEditMode" class="document-content relative">
+            <div 
+                ref="editorRef"
+                class="docx-preview edit-mode min-h-[400px]"
+                contenteditable="true"
+                @contextmenu="handleContextMenu"
+                @input="handleEditorInput"
+            ></div>
+            
+            <!-- AI Context Menu Component -->
+            <AiContextMenu 
+                ref="contextMenuRef"
+                @action-complete="handleActionComplete"
             />
         </div>
         
@@ -87,6 +106,7 @@
 import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { marked } from 'marked';
 import RichTextEditor from './RichTextEditor.vue';
+import AiContextMenu from './AiContextMenu.vue';
 
 const props = defineProps({
     documentContent: String,
@@ -100,6 +120,8 @@ const isEditMode = ref(false);
 const isSaving = ref(false);
 const editedHtml = ref(''); // HTML being edited in RichTextEditor
 const originalHtml = ref(''); // Store original HTML before editing
+const editorRef = ref(null); // Reference to contenteditable div
+const contextMenuRef = ref(null); // Reference to AiContextMenu component
 
 // Normalize messageId to ensure it's always available
 const normalizedMessageId = computed(() => {
@@ -302,15 +324,21 @@ const downloadDocument = async (format) => {
     isGenerating.value = true;
     
     try {
+        // ✅ FIX: Add cache-busting to prevent downloading old file
+        const cacheBuster = Date.now();
+        
         // Call API để download file
-        const response = await fetch(`/api/documents/${normalizedMessageId.value}/download?format=${format}`, {
+        const response = await fetch(`/api/documents/${normalizedMessageId.value}/download?format=${format}&_=${cacheBuster}`, {
             method: 'GET',
             headers: {
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
                 'Accept': format === 'docx' 
                     ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
                     : 'application/pdf',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
             },
+            cache: 'no-store',
         });
         
         if (!response.ok) {
@@ -360,10 +388,571 @@ const toggleEditMode = () => {
         originalHtml.value = docxPreviewHtml.value;
         editedHtml.value = docxPreviewHtml.value;
         isEditMode.value = true;
+        
+        // ✅ FIX: Set innerHTML trực tiếp (không dùng v-html để tránh re-render)
+        nextTick(() => {
+            if (editorRef.value) {
+                editorRef.value.innerHTML = editedHtml.value;
+                editorRef.value.focus();
+                
+                // Set cursor to end of content
+                const range = document.createRange();
+                const selection = window.getSelection();
+                range.selectNodeContents(editorRef.value);
+                range.collapse(false); // false = collapse to end
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+        });
     }
 };
 
 
+
+// ✅ MỚI: Handle context menu (right-click)
+const handleContextMenu = (event) => {
+    const selection = window.getSelection();
+    const selectedText = selection.toString().trim();
+    
+    if (selectedText && selectedText.length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        // Get the range for later replacement
+        const range = selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
+        
+        // Show context menu
+        contextMenuRef.value?.showContextMenu(event, selectedText, range);
+    }
+};
+
+// ✅ MỚI: Handle editor input (contenteditable change)
+// ✅ FIX: Không update editedHtml.value ngay lập tức để tránh v-html re-render
+// Chỉ update khi cần (save, blur, etc.)
+const handleEditorInput = () => {
+    // ✅ FIX: Không update editedHtml.value ở đây để tránh v-html re-render
+    // editedHtml.value chỉ dùng để lưu khi save
+    // Content được lưu trực tiếp từ editorRef.value.innerHTML khi cần
+};
+
+// ✅ MỚI: Handle AI action complete (rewrite, summarize, etc.)
+const handleActionComplete = ({ originalText, newText, range }) => {
+    console.log('🔵 [DEBUG] handleActionComplete START', {
+        originalTextLength: originalText?.length,
+        newTextLength: newText?.length,
+        hasRange: !!range,
+        hasEditorRef: !!editorRef.value,
+    });
+    
+    if (!range || !editorRef.value) {
+        console.warn('🔴 [DEBUG] Missing range or editorRef');
+        alert('Không thể thay thế văn bản: Thiếu range hoặc editorRef');
+        return;
+    }
+    
+    try {
+        // Clone range trước khi thao tác
+        const workingRange = range.cloneRange();
+        
+        // ✅ FIX: Ưu tiên tìm <p> element (paragraph) vì CSS chỉ áp dụng cho p
+        let styleElement = workingRange.commonAncestorContainer;
+        let paragraphElement = null;
+        const styleElementPath = [];
+        
+        // Walk up the DOM tree - ƯU TIÊN tìm <p> trước
+        while (styleElement && styleElement !== editorRef.value) {
+            if (styleElement.nodeType === Node.ELEMENT_NODE) {
+                const tagName = styleElement.tagName;
+                styleElementPath.push({
+                    tag: tagName,
+                    nodeType: styleElement.nodeType,
+                    hasInlineStyle: !!styleElement.style && styleElement.style.length > 0,
+                });
+                
+                // ✅ FIX: Ưu tiên tìm <p> element
+                if (tagName === 'P') {
+                    paragraphElement = styleElement;
+                    break;
+                }
+            }
+            styleElement = styleElement.parentElement;
+        }
+        
+        // Nếu không tìm thấy <p>, tìm từ startContainer
+        if (!paragraphElement) {
+            let current = workingRange.startContainer;
+            while (current && current !== editorRef.value) {
+                if (current.nodeType === Node.TEXT_NODE && current.parentElement) {
+                    current = current.parentElement;
+                }
+                if (current.nodeType === Node.ELEMENT_NODE && current.tagName === 'P') {
+                    paragraphElement = current;
+                    break;
+                }
+                if (current.parentElement) {
+                    current = current.parentElement;
+                } else {
+                    break;
+                }
+            }
+        }
+        
+        // ✅ FIX: Nếu vẫn không có <p>, tìm block element gần nhất
+        if (!paragraphElement) {
+            styleElement = workingRange.commonAncestorContainer;
+            while (styleElement && styleElement !== editorRef.value) {
+                if (styleElement.nodeType === Node.ELEMENT_NODE) {
+                    const tagName = styleElement.tagName;
+                    if (tagName === 'DIV' || tagName === 'H1' || tagName === 'H2' || 
+                        tagName === 'H3' || tagName === 'H4' || tagName === 'H5' || tagName === 'H6') {
+                        paragraphElement = styleElement;
+                        break;
+                    }
+                }
+                styleElement = styleElement.parentElement;
+            }
+        }
+        
+        // Fallback cuối cùng
+        if (!paragraphElement) {
+            const startContainer = workingRange.startContainer;
+            paragraphElement = startContainer.nodeType === Node.TEXT_NODE 
+                ? startContainer.parentElement 
+                : (startContainer.nodeType === Node.ELEMENT_NODE ? startContainer : startContainer.parentElement);
+        }
+        
+        if (!paragraphElement) {
+            throw new Error('Cannot find paragraph or block element');
+        }
+        
+        styleElement = paragraphElement; // Use paragraphElement as styleElement
+        
+        console.log('🔵 [DEBUG] Style element found', {
+            tag: styleElement.tagName,
+            className: styleElement.className,
+            id: styleElement.id,
+            path: styleElementPath,
+        });
+        
+        // Get computed styles from the style element
+        const computedStyle = window.getComputedStyle(styleElement);
+        const inlineStyle = styleElement.style;
+        
+        // Log ALL style information
+        const styleInfo = {
+            // Inline styles (from DOCX template)
+            inline: {
+                fontFamily: inlineStyle.fontFamily || '(none)',
+                fontSize: inlineStyle.fontSize || '(none)',
+                fontStyle: inlineStyle.fontStyle || '(none)',
+                fontWeight: inlineStyle.fontWeight || '(none)',
+                color: inlineStyle.color || '(none)',
+                lineHeight: inlineStyle.lineHeight || '(none)',
+                textAlign: inlineStyle.textAlign || '(none)',
+            },
+            // Computed styles (after CSS applied)
+            computed: {
+                fontFamily: computedStyle.fontFamily,
+                fontSize: computedStyle.fontSize,
+                fontStyle: computedStyle.fontStyle,
+                fontWeight: computedStyle.fontWeight,
+                color: computedStyle.color,
+                lineHeight: computedStyle.lineHeight,
+                textAlign: computedStyle.textAlign,
+                whiteSpace: computedStyle.whiteSpace,
+                wordWrap: computedStyle.wordWrap,
+                overflowWrap: computedStyle.overflowWrap,
+                maxWidth: computedStyle.maxWidth,
+                width: computedStyle.width,
+            },
+        };
+        
+        console.log('🔵 [DEBUG] Style information BEFORE insert', styleInfo);
+        
+        // ✅ FIX: Save original font-size from P element (from inline style or computed)
+        // Ưu tiên inline style (từ DOCX template), fallback về computed style
+        const originalFontSize = inlineStyle.fontSize || computedStyle.fontSize;
+        const originalFontFamily = inlineStyle.fontFamily || computedStyle.fontFamily;
+        const originalLineHeight = inlineStyle.lineHeight || computedStyle.lineHeight;
+        const originalColor = inlineStyle.color || computedStyle.color;
+        const originalFontWeight = inlineStyle.fontWeight || computedStyle.fontWeight;
+        const originalFontStyle = inlineStyle.fontStyle || computedStyle.fontStyle;
+        
+        console.log('🔵 [DEBUG] Original styles to preserve', {
+            fontSize: originalFontSize,
+            fontFamily: originalFontFamily,
+            lineHeight: originalLineHeight,
+            color: originalColor,
+            fontWeight: originalFontWeight,
+            fontStyle: originalFontStyle,
+        });
+        
+        // Save insertion point BEFORE delete
+        const startContainer = workingRange.startContainer;
+        const startOffset = workingRange.startOffset;
+        
+        console.log('🔵 [DEBUG] Before deleteContents', {
+            startContainerType: startContainer.nodeType,
+            startContainerText: startContainer.nodeType === Node.TEXT_NODE ? startContainer.textContent?.substring(0, 50) : startContainer.tagName,
+            startOffset: startOffset,
+            selectedText: workingRange.toString().substring(0, 100),
+        });
+        
+        // ✅ FIX: Tìm P element TRƯỚC KHI deleteContents để giữ reference
+        let targetP = null;
+        if (styleElement && styleElement.tagName === 'P') {
+            targetP = styleElement;
+        } else {
+            // Tìm P từ startContainer
+            let current = startContainer;
+            if (current.nodeType === Node.TEXT_NODE) {
+                current = current.parentElement;
+            }
+            
+            while (current && current !== editorRef.value) {
+                if (current.tagName === 'P') {
+                    targetP = current;
+                    break;
+                }
+                current = current.parentElement;
+            }
+        }
+        
+        // ✅ FIX: Tìm text node trong P và vị trí insert TRƯỚC KHI delete
+        let insertTextNode = null;
+        let insertOffset = 0;
+        
+        if (targetP && targetP.tagName === 'P') {
+            // Tìm text node chứa startContainer
+            if (startContainer.nodeType === Node.TEXT_NODE && targetP.contains(startContainer)) {
+                insertTextNode = startContainer;
+                insertOffset = startOffset;
+            } else {
+                // Tìm text node đầu tiên trong P
+                const textNodesInP = Array.from(targetP.childNodes).filter(node => node.nodeType === Node.TEXT_NODE);
+                if (textNodesInP.length > 0) {
+                    insertTextNode = textNodesInP[0];
+                    insertOffset = 0;
+                }
+            }
+        }
+        
+        console.log('🔵 [DEBUG] Target P and insert position BEFORE delete', {
+            foundP: !!targetP,
+            targetPTag: targetP?.tagName,
+            insertTextNode: !!insertTextNode,
+            insertOffset: insertOffset,
+        });
+        
+        // Delete selected content
+        workingRange.deleteContents();
+        
+        // ✅ FIX: Insert vào P element đã tìm được
+        let finalInsertRange = document.createRange();
+        
+        if (targetP && targetP.tagName === 'P') {
+            // Nếu text node vẫn còn (không bị xóa hết), insert vào đó
+            if (insertTextNode && insertTextNode.parentElement === targetP) {
+                // Text node còn tồn tại, insert vào vị trí đã tính
+                finalInsertRange.setStart(insertTextNode, Math.min(insertOffset, insertTextNode.textContent.length));
+                finalInsertRange.collapse(true);
+            } else {
+                // Text node đã bị xóa hoặc không tìm thấy, tìm text node mới trong P
+                const textNodesInP = Array.from(targetP.childNodes).filter(node => node.nodeType === Node.TEXT_NODE);
+                if (textNodesInP.length > 0) {
+                    // Insert vào cuối text node cuối cùng
+                    const lastTextNode = textNodesInP[textNodesInP.length - 1];
+                    finalInsertRange.setStart(lastTextNode, lastTextNode.textContent.length);
+                    finalInsertRange.collapse(true);
+                } else {
+                    // P không có text node, insert vào đầu P
+                    finalInsertRange.setStart(targetP, 0);
+                    finalInsertRange.collapse(true);
+                }
+            }
+        } else {
+            console.warn('🔴 [DEBUG] Cannot find P element, using fallback');
+            // Fallback: dùng range sau deleteContents
+            try {
+                finalInsertRange.setStart(workingRange.startContainer, workingRange.startOffset);
+                finalInsertRange.collapse(true);
+            } catch (e) {
+                if (startContainer && startContainer.parentElement) {
+                    const parent = startContainer.nodeType === Node.TEXT_NODE 
+                        ? startContainer.parentElement 
+                        : startContainer;
+                    finalInsertRange.setStart(parent, 0);
+                    finalInsertRange.collapse(true);
+                } else {
+                    throw new Error('Cannot create insertion range');
+                }
+            }
+        }
+        
+        console.log('🔵 [DEBUG] Final insert range', {
+            startContainerType: finalInsertRange.startContainer.nodeType,
+            startContainerTag: finalInsertRange.startContainer.nodeType === Node.ELEMENT_NODE 
+                ? finalInsertRange.startContainer.tagName 
+                : 'TEXT',
+            startOffset: finalInsertRange.startOffset,
+            parentElement: finalInsertRange.startContainer.nodeType === Node.TEXT_NODE 
+                ? finalInsertRange.startContainer.parentElement?.tagName 
+                : finalInsertRange.startContainer.tagName,
+        });
+        
+        // ✅ FIX: Check if text contains newlines (\n) and convert to <br> tags
+        const hasNewlines = newText.includes('\n');
+        let insertedNode = null;
+        
+        console.log('🔵 [DEBUG] Inserting text', {
+            hasNewlines,
+            textLength: newText.length,
+            textPreview: newText.substring(0, 100),
+            newlineCount: (newText.match(/\n/g) || []).length,
+        });
+        
+        if (hasNewlines) {
+            // Text has line breaks → need to insert HTML with <br> tags
+            // Create a temporary container to hold the HTML
+            const tempContainer = document.createElement('span');
+            
+            // Split text by newlines and filter out empty lines
+            const lines = newText.split('\n').filter(line => line.trim().length > 0);
+            
+            console.log('🔵 [DEBUG] Processing lines', {
+                originalLineCount: newText.split('\n').length,
+                filteredLineCount: lines.length,
+                emptyLinesRemoved: newText.split('\n').length - lines.length,
+            });
+            
+            lines.forEach((line, index) => {
+                if (index > 0) {
+                    // Add <br> before each line except the first
+                    tempContainer.appendChild(document.createElement('br'));
+                }
+                // Line is already filtered, so it's guaranteed to have content
+                tempContainer.appendChild(document.createTextNode(line));
+            });
+            
+            // Insert all children of temp container
+            const fragment = document.createDocumentFragment();
+            while (tempContainer.firstChild) {
+                fragment.appendChild(tempContainer.firstChild);
+            }
+            
+            finalInsertRange.insertNode(fragment);
+            insertedNode = finalInsertRange.startContainer; // Reference to insertion point
+            
+            console.log('🔵 [DEBUG] Inserted HTML with <br> tags', {
+                lineCount: lines.length,
+                brCount: lines.length - 1,
+            });
+        } else {
+            // No newlines → insert as simple text node
+            const textNode = document.createTextNode(newText);
+            finalInsertRange.insertNode(textNode);
+            insertedNode = textNode;
+        }
+        
+        console.log('🔵 [DEBUG] Content inserted', {
+            hasNewlines,
+            parentElement: insertedNode?.parentElement?.tagName || (finalInsertRange.startContainer.nodeType === Node.ELEMENT_NODE ? finalInsertRange.startContainer.tagName : 'TEXT'),
+            targetParagraphTag: styleElement.tagName,
+        });
+        
+        // ✅ FIX: Ensure P has proper width constraint and word-wrap
+        // Get parent element (from insertedNode or from range)
+        let parentP = null;
+        if (insertedNode && insertedNode.parentElement) {
+            parentP = insertedNode.parentElement;
+        } else if (finalInsertRange.startContainer.nodeType === Node.ELEMENT_NODE) {
+            parentP = finalInsertRange.startContainer;
+        } else if (finalInsertRange.startContainer.parentElement) {
+            parentP = finalInsertRange.startContainer.parentElement;
+        }
+        
+        // Walk up to find P element
+        while (parentP && parentP.tagName !== 'P' && parentP !== editorRef.value) {
+            parentP = parentP.parentElement;
+        }
+        if (parentP && parentP.tagName === 'P') {
+            // Get computed styles to check current state
+            const computed = window.getComputedStyle(parentP);
+            
+            // Check if P has width constraint
+            const hasWidthConstraint = computed.maxWidth !== 'none' && computed.maxWidth !== '0px';
+            const parentWidth = parentP.offsetWidth;
+            const scrollWidth = parentP.scrollWidth;
+            
+            console.log('🔵 [DEBUG] P width check', {
+                hasWidthConstraint,
+                maxWidth: computed.maxWidth,
+                width: computed.width,
+                offsetWidth: parentWidth,
+                scrollWidth: scrollWidth,
+                isOverflowing: scrollWidth > parentWidth,
+            });
+            
+            // If P doesn't have proper width constraint, ensure it inherits from parent
+            // The CSS already has max-width: 100% !important, so this should work
+            // But we can force it via inline style if needed (without !important)
+            if (!hasWidthConstraint || scrollWidth > parentWidth) {
+                // Ensure P inherits width from parent container
+                const parentContainer = parentP.parentElement;
+                if (parentContainer) {
+                    const containerWidth = parentContainer.offsetWidth;
+                    console.log('🔵 [DEBUG] Parent container width', {
+                        containerTag: parentContainer.tagName,
+                        containerWidth: containerWidth,
+                    });
+                }
+            }
+        }
+        
+        // Get computed styles AFTER insert to verify
+        // Use parentP found earlier (works for both text node and fragment insert)
+        const parentAfterInsert = parentP;
+        if (parentAfterInsert && parentAfterInsert.tagName === 'P') {
+            const computedAfterInsert = window.getComputedStyle(parentAfterInsert);
+            console.log('🔵 [DEBUG] Parent styles AFTER insert', {
+                parentTag: parentAfterInsert.tagName,
+                fontFamily: computedAfterInsert.fontFamily,
+                fontSize: computedAfterInsert.fontSize,
+                fontStyle: computedAfterInsert.fontStyle,
+                fontWeight: computedAfterInsert.fontWeight,
+                color: computedAfterInsert.color,
+                lineHeight: computedAfterInsert.lineHeight,
+                whiteSpace: computedAfterInsert.whiteSpace,
+                wordWrap: computedAfterInsert.wordWrap,
+                overflowWrap: computedAfterInsert.overflowWrap,
+                wordBreak: computedAfterInsert.wordBreak,
+                maxWidth: computedAfterInsert.maxWidth,
+                width: computedAfterInsert.width,
+                display: computedAfterInsert.display,
+                boxSizing: computedAfterInsert.boxSizing,
+            });
+            
+            // ✅ DEBUG: Check if P has inline style that might override CSS
+            const inlineStyleText = parentAfterInsert.getAttribute('style') || '';
+            console.log('🔵 [DEBUG] P inline styles', {
+                hasInlineStyle: parentAfterInsert.style.length > 0,
+                inlineStyleText: inlineStyleText,
+                // Check critical properties that might cause no-wrap
+                inlineWhiteSpace: parentAfterInsert.style.whiteSpace || '(not set)',
+                inlineWordWrap: parentAfterInsert.style.wordWrap || '(not set)',
+                inlineOverflowWrap: parentAfterInsert.style.overflowWrap || '(not set)',
+            });
+            
+            // ✅ FIX: Check if inline style contains white-space or word-wrap that prevents wrapping
+            // And force override it
+            if (inlineStyleText.includes('white-space') || 
+                inlineStyleText.includes('word-wrap') || 
+                inlineStyleText.includes('overflow-wrap') ||
+                inlineStyleText.includes('nowrap')) {
+                console.log('🔴 [DEBUG] Found problematic inline style, overriding...');
+            }
+            
+            // ✅ FIX: Preserve original font styles from P element
+            // Apply original font-size, font-family, line-height, color, etc.
+            if (originalFontSize && originalFontSize !== '(none)') {
+                parentAfterInsert.style.fontSize = originalFontSize;
+            }
+            if (originalFontFamily && originalFontFamily !== '(none)') {
+                parentAfterInsert.style.fontFamily = originalFontFamily;
+            }
+            if (originalLineHeight && originalLineHeight !== '(none)') {
+                parentAfterInsert.style.lineHeight = originalLineHeight;
+            }
+            if (originalColor && originalColor !== '(none)') {
+                parentAfterInsert.style.color = originalColor;
+            }
+            if (originalFontWeight && originalFontWeight !== '(none)') {
+                parentAfterInsert.style.fontWeight = originalFontWeight;
+            }
+            if (originalFontStyle && originalFontStyle !== '(none)') {
+                parentAfterInsert.style.fontStyle = originalFontStyle;
+            }
+            
+            // ✅ FIX: Force apply word-wrap to P via inline style (override any existing inline styles)
+            parentAfterInsert.style.whiteSpace = 'normal';
+            parentAfterInsert.style.wordWrap = 'break-word';
+            parentAfterInsert.style.overflowWrap = 'break-word';
+            parentAfterInsert.style.wordBreak = 'break-word';
+            parentAfterInsert.style.width = '100%';
+            parentAfterInsert.style.maxWidth = '100%';
+            parentAfterInsert.style.boxSizing = 'border-box';
+            
+            console.log('🔵 [DEBUG] Applied inline styles to P', {
+                preservedFontSize: parentAfterInsert.style.fontSize,
+                preservedFontFamily: parentAfterInsert.style.fontFamily,
+                preservedLineHeight: parentAfterInsert.style.lineHeight,
+                newWhiteSpace: parentAfterInsert.style.whiteSpace,
+                newWordWrap: parentAfterInsert.style.wordWrap,
+                newWidth: parentAfterInsert.style.width,
+            });
+            
+            // ✅ DEBUG: Check P's computed width and content
+            console.log('🔵 [DEBUG] P dimensions and text', {
+                pWidth: parentAfterInsert.offsetWidth,
+                pScrollWidth: parentAfterInsert.scrollWidth,
+                newTextLength: newText.length,
+                newTextPreview: newText.substring(0, 100),
+            });
+            
+            // ✅ DEBUG: Check DOM hierarchy to find width constraints
+            let element = parentAfterInsert;
+            const hierarchy = [];
+            while (element && element !== document.body) {
+                const computed = window.getComputedStyle(element);
+                hierarchy.push({
+                    tag: element.tagName,
+                    className: element.className?.substring(0, 50),
+                    offsetWidth: element.offsetWidth,
+                    scrollWidth: element.scrollWidth,
+                    computedWidth: computed.width,
+                    computedMaxWidth: computed.maxWidth,
+                    overflow: computed.overflow,
+                    overflowX: computed.overflowX,
+                });
+                element = element.parentElement;
+            }
+            console.log('🔵 [DEBUG] DOM hierarchy (P → body)', hierarchy);
+        }
+        
+        // Set cursor after inserted content
+        try {
+            if (insertedNode && insertedNode.nodeType === Node.TEXT_NODE) {
+                finalInsertRange.setStartAfter(insertedNode);
+            } else if (parentP) {
+                // For fragment insert, set cursor at end of parent P
+                finalInsertRange.selectNodeContents(parentP);
+                finalInsertRange.collapse(false); // collapse to end
+            }
+            finalInsertRange.collapse(true);
+            
+            // Clear selection and restore cursor
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(finalInsertRange);
+        } catch (cursorError) {
+            console.warn('🔴 [DEBUG] Failed to set cursor, ignoring', cursorError);
+        }
+        
+        console.log('✅ [DEBUG] Text replaced successfully', {
+            originalLength: originalText.length,
+            newLength: newText.length,
+            styleElementTag: styleElement?.tagName,
+        });
+    } catch (error) {
+        console.error('🔴 [DEBUG] Failed to replace text:', error, {
+            errorMessage: error.message,
+            errorStack: error.stack,
+            hasRange: !!range,
+            hasEditorRef: !!editorRef.value,
+        });
+        alert(`Không thể thay thế văn bản: ${error.message || 'Vui lòng thử lại.'}`);
+    }
+};
 
 // ✅ MỚI: Save edited HTML
 const saveEditedHtml = async () => {
@@ -372,16 +961,16 @@ const saveEditedHtml = async () => {
         return;
     }
     
-    if (!editedHtml.value) {
-        alert('Không tìm thấy nội dung để lưu.');
+    if (!editorRef.value) {
+        alert('Không tìm thấy editor. Vui lòng thử lại sau.');
         return;
     }
     
     isSaving.value = true;
     
     try {
-        // Get HTML from RichTextEditor
-        const htmlToSave = editedHtml.value;
+        // ✅ FIX: Get HTML trực tiếp từ editorRef (không dùng editedHtml.value)
+        const htmlToSave = editorRef.value.innerHTML;
         
         // Call API to save edited HTML
         const response = await fetch(`/api/documents/${normalizedMessageId.value}/html-preview`, {
@@ -400,14 +989,17 @@ const saveEditedHtml = async () => {
             throw new Error(errorData.error || 'Failed to save HTML preview');
         }
         
+        // ✅ FIX: Reload HTML preview từ server để đảm bảo sync với DOCX mới
+        console.log('🔵 [saveEditedHtml] Reloading HTML preview from server after save...');
+        await loadHtmlPreview();
+        
         // ✅ FIX: Update reactive values sau khi save thành công
-        originalHtml.value = htmlToSave;
-        docxPreviewHtml.value = htmlToSave;
+        originalHtml.value = docxPreviewHtml.value;
         
         // Exit edit mode
         isEditMode.value = false;
         
-        alert('HTML đã được lưu thành công!');
+        alert('Nội dung đã được lưu và file DOCX đã được cập nhật thành công!');
         
     } catch (error) {
         console.error('Failed to save HTML:', error);
@@ -483,11 +1075,36 @@ onMounted(async () => {
     outline-offset: 2px;
     background: #f8fafc;
     min-height: 200px;
+    /* ✅ FIX: Đảm bảo content không overflow trong edit mode */
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
 }
 
 .docx-preview.edit-mode:focus {
     outline: 2px solid #2563eb;
     background: white;
+}
+
+/* ✅ FIX: Force word-wrap cho P trong edit mode (override inline styles từ DOCX) */
+.docx-preview.edit-mode p {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+/* ✅ FIX: Force word-wrap cho DIV trong edit mode */
+.docx-preview.edit-mode div {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
 }
 
 /* ✅ FIX: Preserve superscript/subscript formatting */
@@ -522,24 +1139,46 @@ onMounted(async () => {
     margin: 0 !important;
     box-shadow: none !important;
     background: transparent !important;
-    /* ✅ FIX: Preserve font và spacing từ template */
-    font-family: 'Times New Roman', serif !important;
-    font-size: 13pt !important;
-    line-height: 1.5 !important;
+    /* Default font - KHÔNG dùng !important để inline style được preserve */
+    font-family: 'Times New Roman', serif;
+    font-size: 13pt;
+    line-height: 1.5;
 }
 
 /* ✅ FIX: Preserve paragraph spacing từ template */
+/* KHÔNG dùng !important cho font-size/font-family để inline style từ DOCX được preserve */
 .docx-preview :deep(p) {
     margin: 0.5em 0 !important;
-    /* ✅ FIX: KHÔNG force text-align, preserve từ inline style của DOCX */
-    font-family: 'Times New Roman', serif !important;
-    font-size: 13pt !important;
-    line-height: 1.5 !important;
-    white-space: normal !important; /* ✅ FIX: Normal whitespace, each <p> is a new line */
-    word-wrap: break-word !important; /* ✅ FIX: Break long words */
-    overflow-wrap: break-word !important; /* ✅ FIX: Break long words */
-    display: block !important; /* ✅ FIX: Ensure each paragraph is on a new line */
-    page-break-inside: avoid !important; /* ✅ FIX: Avoid breaking paragraphs */
+    /* Default font - sẽ bị override bởi inline style từ DOCX nếu có */
+    font-family: 'Times New Roman', serif;
+    font-size: 13pt;
+    line-height: 1.5;
+    /* ✅ FIX: Đảm bảo text tự động xuống dòng - dùng break-word để break cả long words */
+    white-space: normal !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important; /* ✅ FIX: break-word thay vì normal để break long words */
+    display: block !important;
+    page-break-inside: avoid !important;
+    max-width: 100% !important;
+    width: 100% !important; /* ✅ FIX: Đảm bảo P có width constraint */
+    box-sizing: border-box !important;
+}
+
+/* ✅ FIX: CSS cho DIV (khi DOCX convert ra DIV thay vì P) */
+.docx-preview :deep(div) {
+    /* Default font - sẽ bị override bởi inline style từ DOCX nếu có */
+    font-family: 'Times New Roman', serif;
+    font-size: 13pt;
+    line-height: 1.5;
+    /* ✅ FIX: Đảm bảo text tự động xuống dòng - dùng break-word để break cả long words */
+    white-space: normal !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important; /* ✅ FIX: break-word thay vì normal để break long words */
+    max-width: 100% !important;
+    width: 100% !important; /* ✅ FIX: Đảm bảo DIV có width constraint */
+    box-sizing: border-box !important;
 }
 
 /* ✅ FIX: Preserve inline styles từ DOCX (alignment, etc.) */
@@ -605,6 +1244,15 @@ onMounted(async () => {
 
 /* ✅ FIX: Preserve paragraph formatting - KHÔNG override alignment từ inline style */
 /* Note: Alignment được preserve từ inline style của DOCX, không cần force justify */
+
+/* ✅ FIX: Style cho span được tạo khi rewrite - đảm bảo word-wrap và preserve style */
+.docx-preview.edit-mode span {
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    white-space: normal !important;
+    display: inline !important;
+    max-width: 100% !important;
+}
 
 /* Preserve list formatting */
 .docx-preview :deep(ul),

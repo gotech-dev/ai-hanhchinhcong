@@ -91,7 +91,11 @@ class DocumentDraftingService
             
             // 3. Generate content using AI (if needed)
             $aiContent = [];
-            if (empty($collectedData) || $this->needsAIContentGeneration($collectedData)) {
+            // ✅ Check for skip AI flag (used by "Tạo Từ Mẫu" flow - show template preview only)
+            $skipAiGeneration = $collectedData['__skip_ai__'] ?? false;
+            unset($collectedData['__skip_ai__']); // Remove flag from data
+            
+            if (!$skipAiGeneration && (empty($collectedData) || $this->needsAIContentGeneration($collectedData))) {
                 // Mode: AI soạn thảo nội dung
                 // ✅ LOG: Starting AI content generation
                 Log::info('🔵 [DocumentDrafting] Starting AI content generation', [
@@ -332,19 +336,40 @@ class DocumentDraftingService
      */
     protected function needsAIContentGeneration(array $collectedData): bool
     {
-        // If collectedData has only basic fields (so_van_ban, ngay_thang, etc.), need AI generation
-        $basicFields = ['so_van_ban', 'ngay_thang', 'nguoi_ky', 'chuc_vu', 'ten_co_quan'];
-        $hasContentFields = false;
+        // ✅ FIX: LUÔN gọi AI để mở rộng nội dung từ câu trả lời ngắn của user
+        // Ngay cả khi có collected_data, AI vẫn cần generate nội dung chuyên nghiệp, đầy đủ
+        // Ví dụ: User trả lời "tiến độ nhanh" → AI mở rộng thành đoạn văn đầy đủ
         
+        // If collectedData has only basic fields (so_van_ban, ngay_thang, etc.), need AI generation
+        $basicFields = ['so_van_ban', 'ngay_thang', 'nguoi_ky', 'chuc_vu', 'ten_co_quan', 'ngay', 'thang', 'nam'];
+        
+        // Check if ALL collected data are just basic fields
+        $onlyBasicFields = true;
         foreach ($collectedData as $key => $value) {
             if (!in_array($key, $basicFields) && !empty($value)) {
-                $hasContentFields = true;
+                $onlyBasicFields = false;
                 break;
             }
         }
         
-        // If no content fields, need AI generation
-        return !$hasContentFields;
+        // If ONLY basic fields → need AI generation
+        if ($onlyBasicFields) {
+            return true;
+        }
+        
+        // ✅ LOGIC MỚI: Nếu có content fields nhưng giá trị ngắn (< 100 chars) → CẦN AI mở rộng
+        // Đây là trường hợp của report_assistant: User trả lời ngắn, cần AI expand
+        foreach ($collectedData as $key => $value) {
+            if (!in_array($key, $basicFields) && !empty($value)) {
+                // Nếu giá trị ngắn (< 100 chars), cần AI mở rộng
+                if (is_string($value) && mb_strlen($value) < 100) {
+                    return true; // Cần AI để mở rộng nội dung
+                }
+            }
+        }
+        
+        // Nếu tất cả content fields đều đã đầy đủ (>= 100 chars) → Không cần AI
+        return false;
     }
     
     /**
@@ -442,6 +467,23 @@ class DocumentDraftingService
             if (empty($placeholders)) {
                 // Try to extract from template
                 $placeholders = $templateProcessor->getVariables();
+            }
+            
+            // ✅ FIX: Nếu có AI body content nhưng template không có placeholder body
+            // → Fallback sang code generation để tạo DOCX với nội dung AI
+            $hasAiBodyContent = isset($documentData['body']) && !empty($documentData['body']);
+            $hasBodyPlaceholder = in_array('body', $placeholders) || in_array('${body}', $placeholders) || in_array('noi_dung', $placeholders);
+            
+            if ($hasAiBodyContent && !$hasBodyPlaceholder && count($placeholders) < 5) {
+                Log::info('🔵 [DocumentDrafting] Template has no body placeholder but AI generated body content, falling back to code generation', [
+                    'template_id' => $template->id,
+                    'has_ai_body' => true,
+                    'placeholders_count' => count($placeholders),
+                    'placeholders' => $placeholders,
+                ]);
+                
+                // Fallback to code generation with AI content
+                return $this->generateDocxFromAiContent($documentData, $session, $template);
             }
             
             // ✅ LOG: Placeholders found

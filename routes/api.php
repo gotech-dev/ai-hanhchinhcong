@@ -88,6 +88,14 @@ Route::middleware('auth:web')->group(function () {
         Route::get('/{messageId}/compare', [\App\Http\Controllers\DocumentController::class, 'compare']);
     });
     
+    // ✅ MỚI: AI Text Processing routes (for rewrite, summarize, expand, fix-grammar)
+    Route::prefix('ai')->group(function () {
+        Route::post('/rewrite', [\App\Http\Controllers\Api\AiRewriteController::class, 'rewrite']);
+        Route::post('/summarize', [\App\Http\Controllers\Api\AiRewriteController::class, 'summarize']);
+        Route::post('/expand', [\App\Http\Controllers\Api\AiRewriteController::class, 'expand']);
+        Route::post('/fix-grammar', [\App\Http\Controllers\Api\AiRewriteController::class, 'fixGrammar']);
+    });
+    
     // ✅ MỚI: Template routes (for template HTML preview)
     Route::prefix('templates')->group(function () {
         // Preview template as HTML (from saved HTML in metadata)

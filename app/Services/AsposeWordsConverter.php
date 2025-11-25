@@ -314,6 +314,9 @@ class AsposeWordsConverter
             // Initialize Aspose.Words API
             $wordsApi = $this->getWordsApi();
             
+            // ✅ FIX: Add @page CSS rule to set page margins
+            $htmlContent = $this->addPageMarginsToHtml($htmlContent);
+            
             // ✅ Save HTML to temp file (Aspose API needs file path)
             $tempHtmlPath = sys_get_temp_dir() . '/' . uniqid('temp_html_') . '.html';
             file_put_contents($tempHtmlPath, $htmlContent);
@@ -351,7 +354,10 @@ class AsposeWordsConverter
                 throw new \Exception("Unexpected response type from Aspose API");
             }
             
-            Log::info('✅ [AsposeWordsConverter] HTML converted to DOCX', [
+            // ✅ FIX: Set page margins using PhpWord (fallback if @page CSS doesn't work)
+            $tempDocxPath = $this->setPageMargins($tempDocxPath);
+            
+            Log::info('✅ [AsposeWordsConverter] HTML converted to DOCX with margins', [
                 'local_path' => $tempDocxPath,
                 'file_size' => filesize($tempDocxPath),
             ]);
@@ -383,6 +389,95 @@ class AsposeWordsConverter
         $wordsApi->getConfig()->setHost($this->baseUrl);
         
         return $wordsApi;
+    }
+    
+    /**
+     * Add @page CSS rule to HTML to set page margins
+     * 
+     * @param string $htmlContent
+     * @return string
+     */
+    protected function addPageMarginsToHtml(string $htmlContent): string
+    {
+        // Check if HTML already has <style> tag
+        if (preg_match('/<style[^>]*>(.*?)<\/style>/is', $htmlContent, $matches)) {
+            // Add @page rule to existing style
+            $existingCss = $matches[1];
+            $newCss = $existingCss . "\n\n/* Page margins for DOCX */\n@page {\n    margin: 2cm 2cm 2cm 3cm; /* top right bottom left */\n    size: A4;\n}\n";
+            $htmlContent = str_replace($matches[1], $newCss, $htmlContent);
+        } else {
+            // Add new <style> tag with @page rule
+            $styleTag = '<style>
+/* Page margins for DOCX */
+@page {
+    margin: 2cm 2cm 2cm 3cm; /* top right bottom left */
+    size: A4;
+}
+</style>';
+            
+            // Insert before </head> or at the beginning
+            if (preg_match('/<\/head>/i', $htmlContent)) {
+                $htmlContent = str_replace('</head>', $styleTag . "\n</head>", $htmlContent);
+            } else {
+                $htmlContent = $styleTag . "\n" . $htmlContent;
+            }
+        }
+        
+        Log::info('✅ [AsposeWordsConverter] Added @page CSS rule to HTML', [
+            'html_length' => strlen($htmlContent),
+        ]);
+        
+        return $htmlContent;
+    }
+    
+    /**
+     * Set page margins for DOCX using PhpWord (fallback)
+     * 
+     * @param string $docxPath
+     * @return string Path to updated DOCX
+     */
+    protected function setPageMargins(string $docxPath): string
+    {
+        try {
+            // Load DOCX
+            $phpWord = \PhpOffice\PhpWord\IOFactory::load($docxPath);
+            
+            // Get all sections and set margins
+            $sections = $phpWord->getSections();
+            foreach ($sections as $section) {
+                // Set margins (twips: 1 inch = 1440 twips, 1 cm ≈ 567 twips)
+                // 2cm = 1134 twips, 3cm = 1701 twips
+                $section->getStyle()->setMarginTop(1134);    // 2cm
+                $section->getStyle()->setMarginRight(1134);  // 2cm
+                $section->getStyle()->setMarginBottom(1134); // 2cm
+                $section->getStyle()->setMarginLeft(1701);   // 3cm
+            }
+            
+            // Save to temp file
+            $tempDocxWithMargins = sys_get_temp_dir() . '/' . uniqid('docx_margins_') . '.docx';
+            $objWriter = \PhpOffice\PhpWord\IOFactory::createWriter($phpWord, 'Word2007');
+            $objWriter->save($tempDocxWithMargins);
+            
+            // Delete old file
+            if (file_exists($docxPath)) {
+                unlink($docxPath);
+            }
+            
+            Log::info('✅ [AsposeWordsConverter] Set page margins using PhpWord', [
+                'file_path' => $tempDocxWithMargins,
+                'margins' => 'top=2cm, right=2cm, bottom=2cm, left=3cm',
+            ]);
+            
+            return $tempDocxWithMargins;
+            
+        } catch (\Exception $e) {
+            Log::warning('⚠️ [AsposeWordsConverter] Failed to set margins with PhpWord, using original file', [
+                'error' => $e->getMessage(),
+            ]);
+            
+            // Return original file if PhpWord fails
+            return $docxPath;
+        }
     }
 }
 

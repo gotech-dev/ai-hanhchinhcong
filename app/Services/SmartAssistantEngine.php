@@ -74,15 +74,28 @@ class SmartAssistantEngine
                 'session_id' => $session->id,
             ]);
             
-            // Plan workflow if needed
-            $workflow = $this->workflowPlanner->plan($intent, $assistant, $context);
-            
-            // ✅ MỚI: Nếu có steps được định nghĩa, kiểm tra xem có nên thực thi không
+            // ✅ CRITICAL FIX: Check active workflow TRƯỚC khi call workflowPlanner (tránh timeout 30s!)
             $config = $assistant->config ?? [];
             $predefinedSteps = $config['steps'] ?? null;
             $workflowState = $session->workflow_state ?? [];
             $collectedData = $session->collected_data ?? [];
             $currentStepIndex = $workflowState['current_step_index'] ?? 0;
+            
+            // ✅ MỚI: Check if there's an active workflow from handleShowReportTemplate
+            $activeWorkflowSteps = $workflowState['workflow']['steps'] ?? null;
+            $hasActiveWorkflow = !empty($activeWorkflowSteps) && is_array($activeWorkflowSteps);
+            
+            // ✅ CRITICAL FIX: Chỉ plan workflow khi KHÔNG có active workflow (tránh gọi OpenAI không cần thiết)
+            $workflow = null;
+            if (!$hasActiveWorkflow) {
+                // Plan workflow if needed (chỉ khi chưa có workflow đang chạy)
+                $workflow = $this->workflowPlanner->plan($intent, $assistant, $context);
+            } else {
+                Log::info('🔵 [SmartAssistantEngine] Skipping workflow planning (active workflow exists)', [
+                    'session_id' => $session->id,
+                    'active_workflow_steps_count' => count($activeWorkflowSteps),
+                ]);
+            }
 
             // ✅ LOG: Debug steps
             Log::info('🔵 [SmartAssistantEngine] Checking predefined steps', [
@@ -92,10 +105,29 @@ class SmartAssistantEngine
                 'has_config' => !empty($config),
                 'has_steps' => !empty($predefinedSteps),
                 'steps_count' => is_array($predefinedSteps) ? count($predefinedSteps) : 0,
+                'has_active_workflow' => $hasActiveWorkflow,
+                'active_workflow_steps_count' => $hasActiveWorkflow ? count($activeWorkflowSteps) : 0,
                 'current_step_index' => $currentStepIndex,
                 'has_collected_data' => !empty($collectedData),
                 'intent_type' => $intent['type'] ?? null,
             ]);
+
+            // ✅ MỚI: Nếu có active workflow từ handleShowReportTemplate, tiếp tục workflow đó
+            // QUAN TRỌNG: Check này phải trước khi check predefined steps
+            if ($hasActiveWorkflow && $assistant->getAssistantTypeValue() === 'report_assistant') {
+                Log::info('🔵 [SmartAssistantEngine] Active workflow detected, continuing workflow', [
+                    'session_id' => $session->id,
+                    'current_step_index' => $currentStepIndex,
+                    'workflow_steps_count' => count($activeWorkflowSteps),
+                    'intent_type' => $intent['type'] ?? null,
+                ]);
+                
+                // Continue workflow by calling handleShowReportTemplate again
+                // It will check workflow_state and continue from current step
+                // Force intent to create_report to ensure it goes to handleShowReportTemplate
+                $intent['type'] = 'create_report';
+                return $this->handleShowReportTemplate($userMessage, $session, $assistant, $intent, $streamCallback);
+            }
 
             // ✅ FIX: Chỉ thực thi steps khi:
             // 1. Đã bắt đầu workflow (có collected_data hoặc currentStepIndex > 0)
@@ -2110,6 +2142,68 @@ class SmartAssistantEngine
 
         // Nếu có questions, hỏi từng câu một
         if (!empty($questions) && is_array($questions)) {
+            // ✅ MỚI: Check if this is a single-question step (from dynamic workflow)
+            // In dynamic workflow, each step has only 1 question, so we should extract answer immediately
+            $fieldKey = $config['field_key'] ?? null;
+            $stepId = $step['id'] ?? '';
+            
+            // If step has field_key and only 1 question, it's from dynamic workflow
+            // Check if we already have the answer for this field
+            if ($fieldKey && count($questions) === 1) {
+                // Check if field is already collected
+                if (isset($collectedData[$fieldKey]) && !empty($collectedData[$fieldKey])) {
+                    Log::info('🔵 [executeCollectInfoStep] Field already collected, step completed', [
+                        'field_key' => $fieldKey,
+                        'step_id' => $stepId,
+                    ]);
+                    
+                    return [
+                        'response' => '', // Empty response, step is completed
+                        'completed' => true,
+                        'data' => $collectedData,
+                    ];
+                }
+                
+                // Check if user message is a response (not empty and not a question)
+                // If user message looks like an answer, extract it
+                if (!empty($userMessage) && !preg_match('/^\?+$/', trim($userMessage))) {
+                    Log::info('🔵 [executeCollectInfoStep] Extracting answer for single question step', [
+                        'field_key' => $fieldKey,
+                        'step_id' => $stepId,
+                    ]);
+                    
+                    // Extract answer for this specific field
+                    $extractedData = $this->extractFieldValueFromMessage($userMessage, $fieldKey, $questions[0], $assistant);
+                    
+                    if (!empty($extractedData[$fieldKey])) {
+                        $collectedData = array_merge($collectedData, $extractedData);
+                        
+                        return [
+                            'response' => "Cảm ơn bạn đã cung cấp thông tin.",
+                            'completed' => true,
+                            'data' => $collectedData,
+                        ];
+                    }
+                }
+                
+                // If no answer extracted, ask the question
+                $nextQuestion = $questions[0];
+                $formattedQuestion = $this->responseEnhancer->generateContextualQuestion(
+                    $nextQuestion,
+                    $userMessage,
+                    $session,
+                    $assistant,
+                    $collectedData
+                );
+                
+                return [
+                    'response' => $formattedQuestion,
+                    'completed' => false,
+                    'data' => $collectedData,
+                ];
+            }
+            
+            // Original logic for multiple questions
             $askedQuestions = $collectedData['_asked_questions'] ?? [];
             $nextQuestionIndex = count($askedQuestions);
 
@@ -2496,6 +2590,48 @@ class SmartAssistantEngine
         $prompt .= "Hãy thực hiện nhiệm vụ dựa trên thông tin đã thu thập ở trên.";
         
         return $prompt;
+    }
+
+    /**
+     * Extract field value from message for a specific field
+     */
+    protected function extractFieldValueFromMessage(string $message, string $fieldKey, string $question, AiAssistant $assistant): array
+    {
+        try {
+            $response = OpenAI::chat()->create([
+                'model' => $assistant->config['model'] ?? env('OPENAI_MODEL', 'gpt-4o-mini'),
+                'messages' => [
+                    [
+                        'role' => 'system',
+                        'content' => 'Bạn là một AI chuyên extract thông tin từ câu trả lời của user. Trả về JSON với giá trị cho field được hỏi.',
+                    ],
+                    [
+                        'role' => 'user',
+                        'content' => "Câu hỏi: {$question}\n\nCâu trả lời của user: {$message}\n\nTrả về JSON với format: {\"{$fieldKey}\": \"...\"}",
+                    ],
+                ],
+                'temperature' => 0.3,
+                'response_format' => ['type' => 'json_object'],
+            ]);
+
+            $content = $response->choices[0]->message->content;
+            $data = json_decode($content, true);
+
+            if ($data && isset($data[$fieldKey])) {
+                return [$fieldKey => $data[$fieldKey]];
+            }
+            
+            // Fallback: Use message as value
+            return [$fieldKey => trim($message)];
+        } catch (\Exception $e) {
+            Log::error('❌ [extractFieldValueFromMessage] Failed to extract field value', [
+                'field_key' => $fieldKey,
+                'error' => $e->getMessage(),
+            ]);
+            
+            // Fallback: Use message as value
+            return [$fieldKey => trim($message)];
+        }
     }
 
     /**
@@ -2900,8 +3036,15 @@ class SmartAssistantEngine
     }
 
     /**
-     * ✅ MỚI: Xử lý yêu cầu tạo mẫu báo cáo - hiển thị template HTML đã lưu
-     * TUYỆT ĐỐI KHÔNG tự bịa tạo mẫu, chỉ hiển thị template HTML từ database
+     * ✅ SIMPLIFIED: Hiển thị template preview ngay lập tức
+     * 
+     * Flow mới (đơn giản):
+     * 1. Tìm template của assistant
+     * 2. Tạo document từ template (giữ nguyên nội dung gốc)
+     * 3. Hiển thị preview ngay với nút Sửa và Tải DOCX
+     * 4. User tự sửa bằng AI rewrite (bôi đen + chuột phải)
+     * 
+     * ✅ ĐÃ BỎ: Thu thập thông tin, workflow questions, AI generate content
      *
      * @param string $userMessage
      * @param ChatSession $session
@@ -2950,82 +3093,28 @@ class SmartAssistantEngine
                 ];
             }
             
-            // ✅ MỚI: Tạo văn bản từ template thay vì chỉ hiển thị preview
-            $collectedData = $session->collected_data ?? [];
-            
-            // Lấy document_type từ template
-            $documentType = null;
-            try {
-                $documentType = \App\Enums\DocumentType::from($template->document_type);
-            } catch (\ValueError $e) {
-                Log::warning('⚠️ [handleShowReportTemplate] Invalid document_type in template', [
-                    'assistant_id' => $assistant->id,
-                    'template_id' => $template->id,
-                    'template_document_type' => $template->document_type,
-                ]);
-                
-                $response = "Xin lỗi, template có loại văn bản không hợp lệ. Vui lòng liên hệ admin.";
-                
-                if ($streamCallback) {
-                    $streamCallback($response);
-                }
-                
-                return [
-                    'response' => $response,
-                    'workflow_state' => null,
-                ];
-            }
-            
-            // Gọi DocumentDraftingService để tạo văn bản từ template
-            $result = $this->documentDraftingService->draftDocument(
-                $userMessage,
-                $documentType,
-                $session,
-                $assistant,
-                $collectedData,
-                null, // templateSubtype
-                $template->id // templateId
-            );
-            
-            // Tạo response message (giống handleDraftDocument)
-            $response = "✅ Đã tạo văn bản từ mẫu {$template->name} thành công!\n\n";
-            $response .= "**Nội dung văn bản:**\n\n";
-            $response .= $result['content'] . "\n\n";
-            
-            if (isset($result['file_path'])) {
-                $response .= "📄 **File DOCX:** " . $result['file_path'] . "\n\n";
-            }
-            
-            // Add template info to response
-            if (isset($result['metadata']['template_used']) && $result['metadata']['template_used']) {
-                $response .= "\n📋 **Template đã sử dụng:** Có";
-                if (isset($result['metadata']['template_id'])) {
-                    $response .= " (ID: {$result['metadata']['template_id']})";
-                }
-                $response .= "\n";
-            }
-            
-            if ($streamCallback) {
-                $streamCallback($response);
-            }
-            
-            Log::info('✅ [handleShowReportTemplate] Created document from template', [
+            Log::info('🔵 [handleShowReportTemplate] SIMPLIFIED FLOW - Show template preview immediately', [
                 'assistant_id' => $assistant->id,
                 'template_id' => $template->id,
                 'template_name' => $template->name,
-                'document_type' => $documentType->value,
-                'file_path' => $result['file_path'] ?? null,
-                'template_used' => $result['metadata']['template_used'] ?? false,
             ]);
             
-            // ✅ QUAN TRỌNG: Trả về format giống handleDraftDocument để frontend hiển thị DocumentPreview
-            return [
-                'response' => $response,
-                'workflow_state' => [
-                    'current_step' => 'completed',
-                ],
-                'document' => $result, // ✅ Format giống handleDraftDocument
-            ];
+            // ✅ Clear any existing workflow state (fresh start)
+            $session->update([
+                'workflow_state' => null,
+                'collected_data' => [],
+            ]);
+            
+            // ✅ SIMPLIFIED: Generate document directly from template (no AI content generation)
+            // Pass __skip_ai__ flag to keep original template content
+            return $this->generateDocumentFromTemplate(
+                $template,
+                ['__skip_ai__' => true], // Skip AI generation - giữ nguyên nội dung template gốc
+                $session,
+                $assistant,
+                $streamCallback
+            );
+            
         } catch (\Exception $e) {
             Log::error('❌ [handleShowReportTemplate] Error', [
                 'assistant_id' => $assistant->id,
@@ -3044,6 +3133,580 @@ class SmartAssistantEngine
                 'workflow_state' => null,
             ];
         }
+    }
+
+    /**
+     * ✅ PERFORMANCE FIX: Gộp 2 bước thành 1 lần gọi AI (giảm từ 26s xuống 13s)
+     * Identify fields và generate questions trong 1 lần gọi OpenAI
+     * 
+     * @param array $headings
+     * @param array $sections
+     * @param array $templateStructure
+     * @param array $collectedData
+     * @return array ['questions' => [...], 'fields' => [...]]
+     */
+    protected function identifyFieldsAndGenerateQuestionsInOneCall(
+        array $headings, 
+        array $sections, 
+        array $templateStructure,
+        array $collectedData
+    ): array {
+        // Filter out structural headings
+        $contentHeadings = array_filter($headings, function($heading) {
+            if (preg_match('/^[IVXLCDM0-9]+[\.\)]\s*$/', trim($heading))) {
+                return false;
+            }
+            if (strlen(trim($heading)) < 5) {
+                return false;
+            }
+            return true;
+        });
+        
+        if (empty($contentHeadings)) {
+            return ['questions' => [], 'fields' => []];
+        }
+        
+        // Build headings list with index
+        $headingsList = implode("\n", array_map(fn($h, $i) => ($i + 1) . ". {$h}", $contentHeadings, array_keys($contentHeadings)));
+        $templateText = $templateStructure['text_preview'] ?? '';
+        
+        $prompt = "Bạn là chuyên gia phân tích template báo cáo hành chính Việt Nam.\n\n";
+        $prompt .= "**NHIỆM VỤ:** \n";
+        $prompt .= "1. Phân tích và CHỌN các tiêu đề là PHẦN NỘI DUNG CHÍNH cần người dùng cung cấp thông tin\n";
+        $prompt .= "2. Tạo câu hỏi ngắn gọn cho MỖI phần đã chọn\n\n";
+        
+        $prompt .= "**TEMPLATE (200 ký tự đầu):**\n" . mb_substr($templateText, 0, 200) . "...\n\n";
+        $prompt .= "**CÁC TIÊU ĐỀ:**\n{$headingsList}\n\n";
+        
+        $prompt .= "**QUY TẮC CHỌN TIÊU ĐỀ:**\n";
+        $prompt .= "- CHỌN: Phần nội dung chính (VD: 'TÌNH HÌNH TỔ CHỨC', 'Công tác lãnh đạo', 'Kết quả')\n";
+        $prompt .= "- BỎ QUA: Format metadata ('Số:', 'Ngày:'), cấu trúc ('MỤC LỤC', 'I.', 'II.'), header/footer\n\n";
+        
+        $prompt .= "**QUY TẮC TẠO CÂU HỎI:**\n";
+        $prompt .= "- Câu hỏi ngắn gọn, rõ ràng, tự nhiên\n";
+        $prompt .= "- Phù hợp với ngữ cảnh heading\n";
+        $prompt .= "- Sử dụng tiếng Việt lịch sự\n\n";
+        
+        $prompt .= "**VÍ DỤ:**\n";
+        $prompt .= "Heading: 'TÌNH HÌNH TỔ CHỨC ĐẠI HỘI'\n";
+        $prompt .= "→ Câu hỏi: 'Bạn có thể mô tả tình hình tổ chức đại hội không?'\n\n";
+        
+        $prompt .= "Trả về JSON format:\n";
+        $prompt .= "{\"items\": [{\"heading\": \"...\", \"field_label\": \"...\", \"question\": \"...\", \"hint\": \"...\"}]}\n";
+        
+        try {
+            $response = OpenAI::chat()->create([
+                'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
+                'messages' => [
+                    ['role' => 'system', 'content' => 'Bạn là chuyên gia phân tích template và tạo câu hỏi cho báo cáo hành chính.'],
+                    ['role' => 'user', 'content' => $prompt],
+                ],
+                'temperature' => 0.5,
+                'response_format' => ['type' => 'json_object'],
+            ]);
+            
+            $content = $response->choices[0]->message->content;
+            $data = json_decode($content, true);
+            
+            if (isset($data['items']) && is_array($data['items'])) {
+                $questions = [];
+                $fields = [];
+                
+                foreach ($data['items'] as $item) {
+                    $heading = $item['heading'] ?? '';
+                    if (empty($heading)) {
+                        continue;
+                    }
+                    
+                    // Check if already collected
+                    $fieldKey = $this->normalizeFieldKey($heading);
+                    if (isset($collectedData[$fieldKey]) && !empty($collectedData[$fieldKey])) {
+                        continue; // Skip if already collected
+                    }
+                    
+                    $question = [
+                        'field_key' => $fieldKey,
+                        'field_label' => $item['field_label'] ?? $heading,
+                        'heading' => $heading,
+                        'question' => $item['question'] ?? "Vui lòng cung cấp thông tin cho phần: {$heading}",
+                        'hint' => $item['hint'] ?? null,
+                    ];
+                    
+                    $questions[] = $question;
+                    $fields[] = [
+                        'heading' => $heading,
+                        'field_key' => $fieldKey,
+                        'field_label' => $item['field_label'] ?? $heading,
+                        'description' => "Thông tin cho phần: {$heading}",
+                    ];
+                }
+                
+                Log::info('✅ [identifyFieldsAndGenerateQuestionsInOneCall] Success', [
+                    'questions_count' => count($questions),
+                    'fields_count' => count($fields),
+                ]);
+                
+                return ['questions' => $questions, 'fields' => $fields];
+            }
+        } catch (\Exception $e) {
+            Log::error('❌ [identifyFieldsAndGenerateQuestionsInOneCall] Failed', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        // Fallback: Use simple questions
+        $questions = [];
+        foreach (array_slice($contentHeadings, 0, 8) as $heading) {
+            $fieldKey = $this->normalizeFieldKey($heading);
+            if (isset($collectedData[$fieldKey]) && !empty($collectedData[$fieldKey])) {
+                continue;
+            }
+            
+            $questions[] = [
+                'field_key' => $fieldKey,
+                'field_label' => $heading,
+                'heading' => $heading,
+                'question' => "Vui lòng cung cấp thông tin cho phần: {$heading}",
+                'hint' => null,
+            ];
+        }
+        
+        Log::info('✅ [identifyFieldsAndGenerateQuestionsInOneCall] Using fallback', [
+            'questions_count' => count($questions),
+        ]);
+        
+        return ['questions' => $questions, 'fields' => []];
+    }
+
+    /**
+     * Identify required fields from template headings
+     * 
+     * @param array $headings
+     * @param array $sections
+     * @return array Array of required fields with metadata
+     */
+    protected function identifyRequiredFieldsFromHeadings(array $headings, array $sections): array
+    {
+        $requiredFields = [];
+        
+        // Filter out headings that are just structure (like "I.", "II.", etc.)
+        $contentHeadings = array_filter($headings, function($heading) {
+            // Skip pure structure headings
+            if (preg_match('/^[IVXLCDM0-9]+[\.\)]\s*$/', trim($heading))) {
+                return false;
+            }
+            
+            // Skip very short headings (likely structure)
+            if (strlen(trim($heading)) < 5) {
+                return false;
+            }
+            
+            return true;
+        });
+        
+        if (empty($contentHeadings)) {
+            return [];
+        }
+        
+        // Use AI to identify which headings need user input
+        $headingsList = implode("\n", array_map(fn($h, $i) => ($i + 1) . ". {$h}", $contentHeadings, array_keys($contentHeadings)));
+        
+        $prompt = "Bạn là chuyên gia phân tích template báo cáo hành chính Việt Nam.\n\n";
+        $prompt .= "**NHIỆM VỤ:** Phân tích các tiêu đề sau và xác định tiêu đề nào là PHẦN NỘI DUNG CHÍNH cần người dùng cung cấp thông tin.\n\n";
+        $prompt .= "**CÁC TIÊU ĐỀ:**\n{$headingsList}\n\n";
+        $prompt .= "**QUY TẮC QUAN TRỌNG:**\n";
+        $prompt .= "1. CHỌN các tiêu đề là PHẦN NỘI DUNG CHÍNH của báo cáo (ví dụ: 'TÌNH HÌNH TỔ CHỨC ĐẠI HỘI', 'Công tác lãnh đạo, chỉ đạo', 'Kết quả thực hiện')\n";
+        $prompt .= "2. BỎ QUA các tiêu đề sau:\n";
+        $prompt .= "   - Format/Metadata: 'Số:', 'Ngày:', 'Nơi nhận:', 'Người ký:' (đây là format, không phải nội dung)\n";
+        $prompt .= "   - Cấu trúc: 'MỤC LỤC', 'PHỤ LỤC', số thứ tự thuần túy (I., II., 1., 2.)\n";
+        $prompt .= "   - Tiêu đề quá ngắn hoặc chỉ là số/ký tự\n";
+        $prompt .= "   - Tiêu đề là phần header/footer của văn bản\n";
+        $prompt .= "3. field_label là tên ngắn gọn của phần (ví dụ: 'Tình hình tổ chức', 'Công tác lãnh đạo')\n\n";
+        $prompt .= "**VÍ DỤ:**\n";
+        $prompt .= "- 'TÌNH HÌNH TỔ CHỨC ĐẠI HỘI' → CHỌN (phần nội dung chính)\n";
+        $prompt .= "- 'Số: -BC/TĐTN-CTĐ&TTN' → BỎ QUA (format)\n";
+        $prompt .= "- 'Công tác lãnh đạo, chỉ đạo' → CHỌN (phần nội dung chính)\n";
+        $prompt .= "- 'I. MỤC ĐÍCH' → BỎ QUA (cấu trúc)\n\n";
+        $prompt .= "**LƯU Ý:** KHÔNG cần trả về field_key, hệ thống sẽ tự động tạo.\n\n";
+        $prompt .= "Trả về JSON format:\n";
+        $prompt .= "{\"required_fields\": [{\"heading\": \"...\", \"field_label\": \"...\", \"description\": \"...\"}]}\n";
+        
+        try {
+            $response = OpenAI::chat()->create([
+                'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
+                'messages' => [
+                    ['role' => 'system', 'content' => 'Bạn là chuyên gia phân tích template báo cáo. Xác định các phần cần người dùng cung cấp thông tin.'],
+                    ['role' => 'user', 'content' => $prompt],
+                ],
+                'temperature' => 0.3,
+                'response_format' => ['type' => 'json_object'],
+            ]);
+            
+            $content = $response->choices[0]->message->content;
+            $data = json_decode($content, true);
+            
+            if (isset($data['required_fields']) && is_array($data['required_fields'])) {
+                // ✅ FIX: Tự động tạo field_key từ heading để đảm bảo nhất quán
+                $requiredFields = [];
+                foreach ($data['required_fields'] as $field) {
+                    $heading = $field['heading'] ?? '';
+                    if (empty($heading)) {
+                        continue;
+                    }
+                    
+                    // Tạo field_key bằng code (không để AI tạo)
+                    $fieldKey = $this->normalizeFieldKey($heading);
+                    
+                    $requiredFields[] = [
+                        'heading' => $heading,
+                        'field_key' => $fieldKey,
+                        'field_label' => $field['field_label'] ?? $heading,
+                        'description' => $field['description'] ?? "Thông tin cho phần: {$heading}",
+                    ];
+                }
+                
+                Log::info('✅ [identifyRequiredFieldsFromHeadings] AI identified required fields', [
+                    'fields_count' => count($requiredFields),
+                ]);
+                return $requiredFields;
+            }
+        } catch (\Exception $e) {
+            Log::error('❌ [identifyRequiredFieldsFromHeadings] Failed to identify fields using AI', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        // Fallback: Use all content headings
+        foreach ($contentHeadings as $heading) {
+            $fieldKey = $this->normalizeFieldKey($heading);
+            $requiredFields[] = [
+                'heading' => $heading,
+                'field_key' => $fieldKey,
+                'field_label' => $heading,
+                'description' => "Thông tin cho phần: {$heading}",
+            ];
+        }
+        
+        Log::info('✅ [identifyRequiredFieldsFromHeadings] Using fallback method', [
+            'fields_count' => count($requiredFields),
+        ]);
+        
+        return $requiredFields;
+    }
+
+    /**
+     * Normalize heading to field key
+     */
+    protected function normalizeFieldKey(string $heading): string
+    {
+        // Remove numbering, colons, special chars
+        $key = preg_replace('/^[0-9IVXLCDM]+[\.\)]\s*/', '', $heading);
+        $key = preg_replace('/[:：]/', '', $key);
+        $key = mb_strtolower(trim($key));
+        $key = preg_replace('/[^a-z0-9_áàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/u', '_', $key);
+        $key = preg_replace('/_+/', '_', $key);
+        $key = trim($key, '_');
+        
+        return $key;
+    }
+
+    /**
+     * Generate smart questions from headings using AI
+     * 
+     * @param array $fields Array of required fields
+     * @param array $templateStructure Template structure
+     * @return array Array of questions with metadata
+     */
+    protected function generateQuestionsFromHeadings(array $fields, array $templateStructure): array
+    {
+        if (empty($fields)) {
+            return [];
+        }
+        
+        // Build context from template
+        $templateText = $templateStructure['text_preview'] ?? '';
+        
+        // ✅ FIX: Truyền field_key đã có để AI sử dụng đúng
+        $headingsList = implode("\n", array_map(function($f, $i) {
+            return ($i + 1) . ". field_key=\"{$f['field_key']}\" | heading=\"{$f['heading']}\" | label=\"{$f['field_label']}\"";
+        }, $fields, array_keys($fields)));
+        
+        $prompt = "Bạn là chuyên gia tạo câu hỏi thu thập thông tin cho báo cáo hành chính Việt Nam.\n\n";
+        $prompt .= "**TEMPLATE BÁO CÁO:**\n" . substr($templateText, 0, 3000) . "\n\n";
+        $prompt .= "**CÁC PHẦN CẦN HỎI (với field_key đã được định nghĩa):**\n{$headingsList}\n\n";
+        $prompt .= "**YÊU CẦU QUAN TRỌNG:**\n";
+        $prompt .= "1. **QUAN TRỌNG NHẤT:** Sử dụng ĐÚNG field_key đã cho (KHÔNG tự tạo field_key mới)\n";
+        $prompt .= "2. Câu hỏi PHẢI dựa trên heading thực tế trong template (không tự bịa thông tin)\n";
+        $prompt .= "3. Câu hỏi phải ngắn gọn, rõ ràng, dễ hiểu\n";
+        $prompt .= "4. Câu hỏi phải phù hợp với ngữ cảnh và mục đích của từng heading\n";
+        $prompt .= "5. KHÔNG hỏi những thông tin không có trong template\n";
+        $prompt .= "6. Sử dụng tiếng Việt tự nhiên, lịch sự\n";
+        $prompt .= "7. Mỗi câu hỏi chỉ hỏi về 1 phần/heading cụ thể\n\n";
+        $prompt .= "**VÍ DỤ:**\n";
+        $prompt .= "- Input: field_key=\"tinh_hinh_to_chuc\" | heading=\"TÌNH HÌNH TỔ CHỨC ĐẠI HỘI\"\n";
+        $prompt .= "  Output: {\"field_key\": \"tinh_hinh_to_chuc\", \"question\": \"Bạn có thể mô tả tình hình tổ chức đại hội không?\", \"hint\": \"Mô tả về quá trình tổ chức, số lượng tham dự...\"}\n";
+        $prompt .= "- Input: field_key=\"cong_tac_lanh_dao\" | heading=\"Công tác lãnh đạo, chỉ đạo\"\n";
+        $prompt .= "  Output: {\"field_key\": \"cong_tac_lanh_dao\", \"question\": \"Công tác lãnh đạo, chỉ đạo được thực hiện như thế nào?\", \"hint\": \"...\"}\n\n";
+        $prompt .= "Trả về JSON format (sử dụng ĐÚNG field_key đã cho):\n";
+        $prompt .= "{\"questions\": [{\"field_key\": \"<field_key_đã_cho>\", \"question\": \"...\", \"hint\": \"...\"}]}\n";
+        
+        try {
+            $response = OpenAI::chat()->create([
+                'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
+                'messages' => [
+                    ['role' => 'system', 'content' => 'Bạn là chuyên gia tạo câu hỏi thu thập thông tin cho báo cáo.'],
+                    ['role' => 'user', 'content' => $prompt],
+                ],
+                'temperature' => 0.7,
+                'response_format' => ['type' => 'json_object'],
+            ]);
+            
+            $content = $response->choices[0]->message->content;
+            $data = json_decode($content, true);
+            
+            if (isset($data['questions']) && is_array($data['questions'])) {
+                // Map back to fields
+                $questions = [];
+                
+                // Get all field_keys for logging
+                $fieldKeys = array_column($fields, 'field_key');
+                
+                foreach ($data['questions'] as $q) {
+                    $fieldKey = $q['field_key'] ?? '';
+                    $field = array_filter($fields, fn($f) => $f['field_key'] === $fieldKey);
+                    $field = reset($field);
+                    
+                    if ($field) {
+                        $questions[] = [
+                            'field_key' => $fieldKey,
+                            'field_label' => $field['field_label'],
+                            'heading' => $field['heading'],
+                            'question' => $q['question'] ?? "Vui lòng cung cấp thông tin cho phần: {$field['heading']}",
+                            'hint' => $q['hint'] ?? null,
+                        ];
+                    } else {
+                        // ✅ FIX: Khi field_key không khớp, thử sử dụng câu hỏi từ AI với thông tin gốc
+                        Log::warning('⚠️ [generateQuestionsFromHeadings] Field key mismatch, using AI question directly', [
+                            'ai_field_key' => $fieldKey,
+                            'available_field_keys' => $fieldKeys,
+                        ]);
+                        
+                        // Sử dụng câu hỏi từ AI với field_key của AI
+                        if (!empty($q['question'])) {
+                            $questions[] = [
+                                'field_key' => $fieldKey,
+                                'field_label' => $q['field_key'] ?? $fieldKey,
+                                'heading' => $q['field_key'] ?? $fieldKey,
+                                'question' => $q['question'],
+                                'hint' => $q['hint'] ?? null,
+                            ];
+                        }
+                    }
+                }
+                
+                Log::info('✅ [generateQuestionsFromHeadings] AI generated questions', [
+                    'questions_count' => count($questions),
+                    'ai_questions_count' => count($data['questions']),
+                ]);
+                
+                // ✅ FIX: Nếu mapping thất bại (questions rỗng), chạy fallback thay vì return mảng rỗng
+                if (!empty($questions)) {
+                    return $questions;
+                }
+                
+                Log::warning('⚠️ [generateQuestionsFromHeadings] AI mapping failed, falling back to simple questions', [
+                    'ai_questions_count' => count($data['questions']),
+                    'mapped_questions_count' => 0,
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('❌ [generateQuestionsFromHeadings] Failed to generate questions using AI', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        // Fallback: Generate simple questions
+        $questions = [];
+        foreach ($fields as $field) {
+            $questions[] = [
+                'field_key' => $field['field_key'],
+                'field_label' => $field['field_label'],
+                'heading' => $field['heading'],
+                'question' => "Vui lòng cung cấp thông tin cho phần: {$field['heading']}",
+                'hint' => null,
+            ];
+        }
+        
+        Log::info('✅ [generateQuestionsFromHeadings] Using fallback questions', [
+            'questions_count' => count($questions),
+        ]);
+        
+        return $questions;
+    }
+
+    /**
+     * Create workflow steps for collecting information
+     * 
+     * @param array $questions
+     * @return array
+     */
+    protected function createCollectionSteps(array $questions): array
+    {
+        $steps = [];
+        
+        foreach ($questions as $index => $question) {
+            $steps[] = [
+                'id' => "collect_{$question['field_key']}",
+                'type' => 'collect_info',
+                'order' => $index,
+                'config' => [
+                    'field_key' => $question['field_key'],
+                    'field_label' => $question['field_label'],
+                    'heading' => $question['heading'],
+                    'questions' => [$question['question']],
+                    'hint' => $question['hint'],
+                ],
+                'required' => true,
+                'dependencies' => $index > 0 ? ["collect_{$questions[$index - 1]['field_key']}"] : [],
+            ];
+        }
+        
+        // Add final generation step
+        $steps[] = [
+            'id' => 'generate_document',
+            'type' => 'generate',
+            'order' => count($questions),
+            'action' => 'create_report_from_template',
+            'required' => true,
+            'dependencies' => array_map(fn($q) => "collect_{$q['field_key']}", $questions),
+        ];
+        
+        return $steps;
+    }
+
+    /**
+     * Generate document from template with collected data
+     */
+    protected function generateDocumentFromTemplate(
+        \App\Models\DocumentTemplate $template,
+        array $collectedData,
+        ChatSession $session,
+        AiAssistant $assistant,
+        ?callable $streamCallback = null
+    ): array {
+        // Get document type from template
+        $documentType = null;
+        try {
+            $documentType = \App\Enums\DocumentType::from($template->document_type);
+        } catch (\ValueError $e) {
+            Log::error('❌ [generateDocumentFromTemplate] Invalid document_type', [
+                'template_id' => $template->id,
+                'document_type' => $template->document_type,
+            ]);
+            
+            $errorResponse = "Xin lỗi, template có loại văn bản không hợp lệ. Vui lòng liên hệ admin.";
+            
+            if ($streamCallback) {
+                $streamCallback($errorResponse);
+            }
+            
+            return [
+                'response' => $errorResponse,
+                'workflow_state' => null,
+            ];
+        }
+        
+        // Use DocumentDraftingService to generate document
+        $result = $this->documentDraftingService->draftDocument(
+            "Tạo báo cáo từ template {$template->name}",
+            $documentType,
+            $session,
+            $assistant,
+            $collectedData,
+            null, // templateSubtype
+            $template->id // templateId
+        );
+        
+        // Build response message
+        $response = "✅ Đã tạo văn bản từ mẫu {$template->name} thành công!\n\n";
+        $response .= "**Nội dung văn bản:**\n\n";
+        $response .= $result['content'] . "\n\n";
+        
+        if (isset($result['file_path'])) {
+            $response .= "📄 **File DOCX:** " . $result['file_path'] . "\n\n";
+        }
+        
+        // Add template info to response
+        if (isset($result['metadata']['template_used']) && $result['metadata']['template_used']) {
+            $response .= "\n📋 **Template đã sử dụng:** Có";
+            if (isset($result['metadata']['template_id'])) {
+                $response .= " (ID: {$result['metadata']['template_id']})";
+            }
+            $response .= "\n";
+        }
+        
+        if ($streamCallback) {
+            $streamCallback($response);
+        }
+        
+        Log::info('✅ [generateDocumentFromTemplate] Document generated successfully', [
+            'assistant_id' => $assistant->id,
+            'template_id' => $template->id,
+            'template_name' => $template->name,
+            'document_type' => $documentType->value,
+            'file_path' => $result['file_path'] ?? null,
+            'template_used' => $result['metadata']['template_used'] ?? false,
+        ]);
+        
+        // Clear workflow state
+        $session->update([
+            'workflow_state' => null,
+        ]);
+        
+        return [
+            'response' => $response,
+            'workflow_state' => null,
+            'document' => $result, // Format giống handleDraftDocument
+        ];
+    }
+
+    /**
+     * Get missing fields from required fields list
+     */
+    protected function getMissingFieldsFromRequiredFields(array $requiredFields, array $collectedData): array
+    {
+        $missingFields = [];
+        
+        foreach ($requiredFields as $field) {
+            $fieldKey = $field['field_key'] ?? '';
+            if (empty($fieldKey)) {
+                continue;
+            }
+            
+            // Check if field is missing or empty
+            if (!isset($collectedData[$fieldKey]) || empty($collectedData[$fieldKey])) {
+                $missingFields[] = $field;
+            }
+        }
+        
+        return $missingFields;
+    }
+
+    /**
+     * Get template path from file path
+     */
+    protected function getTemplatePath(string $filePath): string
+    {
+        // Parse URL to get path (handle both URL and path formats)
+        $parsedUrl = parse_url($filePath);
+        $path = $parsedUrl['path'] ?? $filePath;
+        
+        // Remove /storage/ prefix if exists
+        $filePath = preg_replace('#^/storage/#', '', $path);
+        $filePath = ltrim($filePath, '/');
+        
+        // Use Storage::disk('public')->path() like other services
+        return \Illuminate\Support\Facades\Storage::disk('public')->path($filePath);
     }
 
     /**
