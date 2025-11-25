@@ -8,6 +8,7 @@ use App\Models\DocumentChunk;
 use App\Services\GeminiWebSearchService;
 use App\Services\ResponseEnhancementService; // ✅ MỚI: Response Enhancement Service
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use OpenAI\Laravel\Facades\OpenAI;
 
 class SmartAssistantEngine
@@ -3179,9 +3180,25 @@ class SmartAssistantEngine
                 $streamCallback($response);
             }
             
+            // ✅ FIX: Convert file_path to URL for download
+            $templateFileUrl = null;
+            if ($template->file_path) {
+                // Check if already a URL (starts with http)
+                if (str_starts_with($template->file_path, 'http')) {
+                    // Extract path from full URL to make it protocol-relative
+                    // Use regex instead of parse_url() to preserve UTF-8 characters
+                    $templateFileUrl = preg_replace('#^https?://[^/]+#', '', $template->file_path);
+                } else {
+                    // Convert storage path to URL (returns /storage/... path)
+                    $templateFileUrl = Storage::url($template->file_path);
+                }
+            }
+            
             Log::info('✅ [handleShowReportTemplate] Returning HTML preview', [
                 'template_id' => $template->id,
                 'html_length' => strlen($htmlPreview),
+                'file_path' => $template->file_path,
+                'file_url' => $templateFileUrl,
             ]);
             
             return [
@@ -3193,7 +3210,7 @@ class SmartAssistantEngine
                     'content_type' => 'html',
                     'template_id' => $template->id,
                     'template_name' => $template->name,
-                    'template_file_path' => $template->file_path, // ✅ FIX: Add file path for download
+                    'template_file_path' => $templateFileUrl, // ✅ FIX: Use URL instead of path
                 ],
             ];
             

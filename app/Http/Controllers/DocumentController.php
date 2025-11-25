@@ -773,23 +773,104 @@ class DocumentController extends Controller
             abort(403, 'Unauthorized');
         }
         
+        $htmlPreview = $request->input('html_preview');
+        
+        // ✅ MỚI: Convert HTML → DOCX và lưu file template mới
+        $newDocxPath = null;
+        $newUrl = null;
+        try {
+            $asposeConverter = app(AsposeWordsConverter::class);
+            
+            if ($asposeConverter->isConfigured()) {
+                Log::info('🔵 [DocumentController] Converting edited template HTML → DOCX', [
+                    'template_id' => $templateId,
+                ]);
+                
+                // Convert HTML → DOCX
+                $tempDocxPath = $asposeConverter->convertHtmlToDocx($htmlPreview);
+                
+                if ($tempDocxPath && file_exists($tempDocxPath)) {
+                    // Generate new file name with timestamp
+                    $originalFileName = $template->file_name;
+                    $fileInfo = pathinfo($originalFileName);
+                    $newFileName = $fileInfo['filename'] . '_edited_' . time() . '.docx';
+                    
+                    // Save new DOCX to storage
+                    $newPath = 'document-templates/' . $newFileName;
+                    Storage::disk('public')->put($newPath, file_get_contents($tempDocxPath));
+                    
+                    // Get new file URL (convert to relative path for frontend)
+                    $newUrl = Storage::disk('public')->url($newPath);
+                    // ✅ FIX: Convert to relative path to avoid protocol issues
+                    // Use regex instead of parse_url() to preserve UTF-8 characters
+                    if (str_starts_with($newUrl, 'http')) {
+                        $newUrl = preg_replace('#^https?://[^/]+#', '', $newUrl);
+                    }
+                    $newDocxPath = Storage::disk('public')->path($newPath);
+                    
+                    // Clean up temp file
+                    if (file_exists($tempDocxPath)) {
+                        unlink($tempDocxPath);
+                    }
+                    
+                    Log::info('✅ [DocumentController] New template DOCX file created from edited HTML', [
+                        'template_id' => $templateId,
+                        'new_file_path' => $newPath,
+                        'new_file_url' => $newUrl,
+                        'file_size' => filesize($newDocxPath),
+                    ]);
+                } else {
+                    throw new \Exception('Converted DOCX file not found');
+                }
+            } else {
+                Log::warning('⚠️ [DocumentController] Aspose API not configured, skipping DOCX conversion', [
+                    'template_id' => $templateId,
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('🔴 [DocumentController] Failed to convert template HTML → DOCX', [
+                'template_id' => $templateId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            // Continue without DOCX conversion - still save HTML preview
+        }
+        
         // Update metadata with new HTML preview
         $metadata = $template->metadata ?? [];
-        $metadata['html_preview'] = $request->input('html_preview');
+        $metadata['html_preview'] = $htmlPreview;
         $metadata['html_preview_edited'] = true;
         $metadata['html_preview_edited_at'] = now()->toISOString();
         
         $template->metadata = $metadata;
+        
+        // ✅ MỚI: Update file_path nếu có DOCX mới
+        if ($newDocxPath && $newUrl) {
+            $template->file_path = $newUrl;
+            $metadata['file_path_updated'] = true;
+            $metadata['file_path_updated_at'] = now()->toISOString();
+            $metadata['original_file_path'] = $template->getOriginal('file_path');
+            
+            Log::info('✅ [DocumentController] Template file_path updated', [
+                'template_id' => $templateId,
+                'old_path' => $template->getOriginal('file_path'),
+                'new_path' => $newUrl,
+            ]);
+        }
+        
         $template->save();
         
-        Log::info('✅ [DocumentController] HTML preview updated', [
+        Log::info('✅ [DocumentController] Template HTML preview and DOCX updated', [
             'template_id' => $templateId,
-            'html_length' => strlen($request->input('html_preview')),
+            'html_length' => strlen($htmlPreview),
+            'docx_updated' => !empty($newDocxPath),
         ]);
         
         return response()->json([
             'success' => true,
-            'message' => 'HTML preview đã được cập nhật thành công',
+            'message' => 'Template HTML preview và file DOCX đã được cập nhật thành công',
+            'docx_updated' => !empty($newDocxPath),
+            'new_file_url' => $newUrl,
             'template' => $template->fresh(),
         ]);
     }

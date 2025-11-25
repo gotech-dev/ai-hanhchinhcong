@@ -215,6 +215,7 @@
                                 class="docx-preview edit-mode min-h-[400px] border-2 border-green-300 rounded"
                                 contenteditable="true"
                                 @contextmenu="handleTemplateContextMenu($event, message.id)"
+                                @blur="handleTemplateEditorBlur(message.id)"
                                 v-html="message.metadata.template_html"
                             ></div>
                             
@@ -781,14 +782,87 @@ const handleCreateFromTemplate = async (messageText) => {
 };
 
 // ✅ Toggle template edit mode
-const toggleTemplateEditMode = (messageId) => {
-    templateEditModes.value[messageId] = !templateEditModes.value[messageId];
+const toggleTemplateEditMode = async (messageId) => {
+    const isExitingEditMode = templateEditModes.value[messageId];
     
-    // Nếu thoát edit mode, reset ref
-    if (!templateEditModes.value[messageId]) {
+    // ✅ FIX: Save edited HTML to server before exiting edit mode
+    if (isExitingEditMode) {
+        const editorEl = templateEditorRefs.value[messageId];
+        const message = messages.value.find(m => m.id === messageId);
+        
+        if (editorEl && message && message.metadata) {
+            const editedHtml = editorEl.innerHTML;
+            const templateId = message.metadata.template_id;
+            
+            if (templateId) {
+                // ✅ Call API to update template HTML and regenerate DOCX
+                try {
+                    console.log('[IndexNew] Saving template HTML to server', {
+                        messageId,
+                        templateId,
+                        htmlLength: editedHtml.length,
+                    });
+                    
+                    const response = await fetch(`/api/templates/${templateId}/html-preview`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                        },
+                        body: JSON.stringify({
+                            html_preview: editedHtml
+                        }),
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        throw new Error(errorData.error || 'Failed to save template HTML');
+                    }
+                    
+                    const result = await response.json();
+                    console.log('[IndexNew] Template HTML saved successfully', {
+                        messageId,
+                        templateId,
+                        result,
+                        docx_updated: result.docx_updated,
+                        new_file_url: result.new_file_url,
+                    });
+                    
+                    // Update message metadata với HTML đã chỉnh sửa
+                    message.metadata.template_html = editedHtml;
+                    
+                    // ✅ Update file_path nếu có DOCX mới
+                    if (result.docx_updated && result.new_file_url) {
+                        message.metadata.template_file_path = result.new_file_url;
+                        console.log('[IndexNew] Template file_path updated', {
+                            messageId,
+                            new_file_url: result.new_file_url,
+                        });
+                    }
+                    
+                    alert('Nội dung template và file DOCX đã được cập nhật thành công!');
+                } catch (error) {
+                    console.error('[IndexNew] Error saving template HTML:', error);
+                    alert(`Không thể lưu template: ${error.message}`);
+                    return; // Don't exit edit mode if save failed
+                }
+            } else {
+                // Fallback: Just update frontend state if no template_id
+                message.metadata.template_html = editedHtml;
+                console.log('[IndexNew] Template HTML saved to frontend state only (no template_id)', {
+                    messageId,
+                    htmlLength: editedHtml.length,
+                });
+            }
+        }
+        
+        // Reset refs sau khi save
         delete templateEditorRefs.value[messageId];
         delete templateContextMenuRefs.value[messageId];
     }
+    
+    // Toggle edit mode
+    templateEditModes.value[messageId] = !templateEditModes.value[messageId];
     
     // Force reactivity
     messages.value = [...messages.value];
@@ -809,6 +883,24 @@ const handleTemplateContextMenu = (event, messageId) => {
         if (contextMenu && contextMenu.showContextMenu) {
             contextMenu.showContextMenu(event, selectedText, range);
         }
+    }
+};
+
+// ✅ Handle editor blur event - auto-save changes (chỉ update frontend state, không gọi API)
+const handleTemplateEditorBlur = (messageId) => {
+    const editorEl = templateEditorRefs.value[messageId];
+    const message = messages.value.find(m => m.id === messageId);
+    
+    if (editorEl && message && message.metadata) {
+        const editedHtml = editorEl.innerHTML;
+        
+        // ✅ Only update frontend state, don't call API (API call happens on exit edit mode)
+        message.metadata.template_html = editedHtml;
+        
+        console.log('[IndexNew] Template HTML auto-saved to frontend state on blur', {
+            messageId,
+            htmlLength: editedHtml.length,
+        });
     }
 };
 
@@ -862,8 +954,15 @@ const downloadTemplate = async (fileUrl, templateName) => {
             },
         });
         
+        console.log('[IndexNew] Download response', {
+            status: response.status,
+            statusText: response.statusText,
+            contentType: response.headers.get('content-type'),
+            contentLength: response.headers.get('content-length'),
+        });
+        
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            throw new Error(`HTTP error! status: ${response.status} - ${response.statusText}`);
         }
         
         // Get filename from URL or use template name
@@ -874,6 +973,11 @@ const downloadTemplate = async (fileUrl, templateName) => {
         
         // Create blob and download
         const blob = await response.blob();
+        
+        console.log('[IndexNew] Blob created', {
+            size: blob.size,
+            type: blob.type,
+        });
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -886,7 +990,7 @@ const downloadTemplate = async (fileUrl, templateName) => {
         console.log('[IndexNew] Template downloaded successfully', { filename });
     } catch (error) {
         console.error('[IndexNew] Error downloading template:', error);
-        alert('Không thể tải template. Vui lòng thử lại sau.');
+        alert(`Không thể tải template. Lỗi: ${error.message}`);
     }
 };
 
