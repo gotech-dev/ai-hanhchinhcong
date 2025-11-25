@@ -53,18 +53,20 @@ class DocumentDraftingService
         ChatSession $session,
         AiAssistant $assistant,
         array $collectedData = [],
-        ?string $templateSubtype = null
+        ?string $templateSubtype = null,
+        ?int $templateId = null
     ): array {
         try {
             Log::info('Drafting document', [
                 'document_type' => $documentType->value,
                 'template_subtype' => $templateSubtype,
+                'template_id' => $templateId,
                 'session_id' => $session->id,
                 'assistant_id' => $assistant->id,
             ]);
             
             // 1. Try to find template from database
-            $template = $this->findTemplate($assistant, $documentType, $templateSubtype);
+            $template = $this->findTemplate($assistant, $documentType, $templateSubtype, $templateId);
             
             // ✅ LOG: Template finding
             Log::info('🔵 [DocumentDrafting] Template finding', [
@@ -212,8 +214,30 @@ class DocumentDraftingService
     /**
      * Find template from database
      */
-    protected function findTemplate(AiAssistant $assistant, DocumentType $documentType, ?string $subtype = null): ?DocumentTemplate
+    protected function findTemplate(AiAssistant $assistant, DocumentType $documentType, ?string $subtype = null, ?int $templateId = null): ?DocumentTemplate
     {
+        // ✅ MỚI: Nếu có template_id, tìm trực tiếp
+        if ($templateId) {
+            $template = DocumentTemplate::where('id', $templateId)
+                ->where('ai_assistant_id', $assistant->id)
+                ->where('is_active', true)
+                ->first();
+                
+            if ($template) {
+                Log::info('✅ [DocumentDrafting] Template found by ID', [
+                    'template_id' => $template->id,
+                    'template_name' => $template->name,
+                ]);
+                return $template;
+            }
+            
+            Log::warning('⚠️ [DocumentDrafting] Template ID provided but not found or inactive', [
+                'template_id' => $templateId,
+                'assistant_id' => $assistant->id,
+            ]);
+            // Fallback to normal search if ID not found
+        }
+
         // ✅ DEBUG: Log all templates for this assistant
         $allTemplates = DocumentTemplate::where('ai_assistant_id', $assistant->id)
             ->where('is_active', true)

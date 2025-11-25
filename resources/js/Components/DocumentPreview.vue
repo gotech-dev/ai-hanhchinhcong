@@ -55,14 +55,13 @@
             v-html="docxPreviewHtml"
         ></div>
         
-        <!-- Edit mode: Không dùng v-html, chỉ set innerHTML một lần -->
-        <div 
-            v-if="isEditMode"
-            ref="editableContent"
-            class="document-content docx-preview edit-mode"
-            contenteditable="true"
-            @input="onHtmlEdit"
-        ></div>
+        <!-- Edit mode: Use RichTextEditor component -->
+        <div v-if="isEditMode" class="document-content">
+            <RichTextEditor 
+                v-model="editedHtml"
+                class="min-h-[400px]"
+            />
+        </div>
         
         <!-- Fallback: Hiển thị markdown với styling đẹp hơn nếu chưa có DOCX -->
         <div v-else-if="!isGenerating && documentContent" class="document-content markdown-fallback" v-html="formattedContent"></div>
@@ -85,8 +84,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue';
+import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { marked } from 'marked';
+import RichTextEditor from './RichTextEditor.vue';
 
 const props = defineProps({
     documentContent: String,
@@ -98,7 +98,7 @@ const docxPreviewHtml = ref('');
 const isGenerating = ref(false);
 const isEditMode = ref(false);
 const isSaving = ref(false);
-const editableContent = ref(null);
+const editedHtml = ref(''); // HTML being edited in RichTextEditor
 const originalHtml = ref(''); // Store original HTML before editing
 
 // Normalize messageId to ensure it's always available
@@ -353,39 +353,17 @@ const toggleEditMode = () => {
         // Exit edit mode - restore original HTML
         if (confirm('Bạn có muốn hủy các thay đổi chưa lưu?')) {
             isEditMode.value = false;
+            editedHtml.value = '';
         }
     } else {
-        // Enter edit mode - save original HTML
+        // Enter edit mode - save original HTML and initialize editor
         originalHtml.value = docxPreviewHtml.value;
+        editedHtml.value = docxPreviewHtml.value;
         isEditMode.value = true;
-        
-        // ✅ FIX: Set innerHTML trực tiếp (không dùng v-html để tránh re-render)
-        nextTick(() => {
-            if (editableContent.value) {
-                editableContent.value.innerHTML = originalHtml.value;
-                editableContent.value.focus();
-                
-                // Set cursor to end of content
-                const range = document.createRange();
-                const selection = window.getSelection();
-                range.selectNodeContents(editableContent.value);
-                range.collapse(false); // false = collapse to end
-                selection.removeAllRanges();
-                selection.addRange(range);
-            }
-        });
     }
 };
 
-// ✅ MỚI: Handle HTML edit input
-// ✅ FIX: Không update docxPreviewHtml.value để tránh Vue re-render và mất cursor position
-const onHtmlEdit = (event) => {
-    // Chỉ log để debug, không update reactive value
-    // HTML sẽ được lấy từ element khi save
-    console.log('[DocumentPreview] HTML edited', {
-        length: event.target.innerHTML.length,
-    });
-};
+
 
 // ✅ MỚI: Save edited HTML
 const saveEditedHtml = async () => {
@@ -394,7 +372,7 @@ const saveEditedHtml = async () => {
         return;
     }
     
-    if (!editableContent.value) {
+    if (!editedHtml.value) {
         alert('Không tìm thấy nội dung để lưu.');
         return;
     }
@@ -402,8 +380,8 @@ const saveEditedHtml = async () => {
     isSaving.value = true;
     
     try {
-        // ✅ FIX: Lấy HTML từ element (không từ reactive value)
-        const editedHtml = editableContent.value.innerHTML;
+        // Get HTML from RichTextEditor
+        const htmlToSave = editedHtml.value;
         
         // Call API to save edited HTML
         const response = await fetch(`/api/documents/${normalizedMessageId.value}/html-preview`, {
@@ -413,7 +391,7 @@ const saveEditedHtml = async () => {
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
             },
             body: JSON.stringify({
-                html_preview: editedHtml
+                html_preview: htmlToSave
             }),
         });
         
@@ -423,8 +401,8 @@ const saveEditedHtml = async () => {
         }
         
         // ✅ FIX: Update reactive values sau khi save thành công
-        originalHtml.value = editedHtml;
-        docxPreviewHtml.value = editedHtml;
+        originalHtml.value = htmlToSave;
+        docxPreviewHtml.value = htmlToSave;
         
         // Exit edit mode
         isEditMode.value = false;

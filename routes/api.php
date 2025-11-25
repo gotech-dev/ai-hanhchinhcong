@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\Route;
 // Public routes
 Route::get('/assistants', [AssistantController::class, 'index']);
 Route::get('/assistants/{id}', [AssistantController::class, 'show']);
+Route::get('/assistants/{id}/templates', [AssistantController::class, 'getTemplates']);
 Route::get('/assistants/{id}/statistics', [AssistantController::class, 'getStatistics']);
 
 // Authenticated routes

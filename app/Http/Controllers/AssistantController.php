@@ -266,6 +266,24 @@ class AssistantController extends Controller
             'statistics' => $stats,
         ]);
     }
+    /**
+     * Get assistant templates
+     */
+    public function getTemplates(int $id)
+    {
+        $assistant = AiAssistant::where('id', $id)
+            ->where('is_active', true)
+            ->firstOrFail();
+
+        $templates = \App\Models\DocumentTemplate::where('ai_assistant_id', $id)
+            ->where('is_active', true)
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        return response()->json([
+            'templates' => $templates
+        ]);
+    }
 }
 
 

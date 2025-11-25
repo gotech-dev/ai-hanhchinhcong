@@ -283,6 +283,7 @@ class ChatController extends Controller
         $request->validate([
             'message' => 'nullable|string|max:5000',
             'attachments' => 'nullable|array',
+            'template_id' => 'nullable|integer|exists:document_templates,id',
         ]);
         
         $user = Auth::user();
@@ -294,6 +295,20 @@ class ChatController extends Controller
         
         $userMessage = $request->input('message', '');
         $attachments = $request->input('attachments', []);
+        $templateId = $request->input('template_id');
+
+        // ✅ MỚI: Nếu có template_id, lưu vào collected_data của session
+        if ($templateId) {
+            $collectedData = $session->collected_data ?? [];
+            $collectedData['template_id'] = $templateId;
+            $session->collected_data = $collectedData;
+            $session->save();
+            
+            Log::info('🔵 [ChatController] Template ID saved to session', [
+                'session_id' => $session->id,
+                'template_id' => $templateId,
+            ]);
+        }
         
         // Build message content with attachments info
         $messageContent = $userMessage;

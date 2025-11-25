@@ -525,6 +525,9 @@ class SmartAssistantEngine
                 'user_message' => substr($userMessage, 0, 200),
             ]);
             
+            // ✅ MỚI: Get template_id from collected data if available
+            $templateId = $collectedData['template_id'] ?? null;
+            
             // Draft document using DocumentDraftingService
             $result = $this->documentDraftingService->draftDocument(
                 $userMessage,
@@ -532,7 +535,8 @@ class SmartAssistantEngine
                 $session,
                 $assistant,
                 $collectedData,
-                $templateSubtype
+                $templateSubtype,
+                $templateId // ✅ Pass template_id
             );
             
             // ✅ MỚI: Log template usage

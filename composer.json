@@ -7,6 +7,7 @@
     "license": "MIT",
     "require": {
         "php": "^8.2",
+        "aspose-cloud/aspose-words-cloud": "^25.10",
         "doctrine/dbal": "^4.3",
         "inertiajs/inertia-laravel": "^2.0",
         "laravel/framework": "^12.0",
