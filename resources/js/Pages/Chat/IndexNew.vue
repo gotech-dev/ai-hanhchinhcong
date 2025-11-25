@@ -177,18 +177,17 @@
                                 </button>
                                 
                                 <!-- ✅ Button Tải DOCX -->
-                                <a
+                                <button
                                     v-if="message.metadata?.template_file_path"
-                                    :href="message.metadata.template_file_path"
-                                    download
-                                    class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm font-medium flex items-center gap-2 transition-colors shadow-sm hover:shadow-md no-underline"
+                                    @click="downloadTemplate(message.metadata.template_file_path, message.metadata.template_name)"
+                                    class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm font-medium flex items-center gap-2 transition-colors shadow-sm hover:shadow-md"
                                     title="Tải template dạng DOCX"
                                 >
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                                     </svg>
                                     Tải DOCX
-                                </a>
+                                </button>
                             </div>
                         </div>
                         
@@ -842,6 +841,52 @@ const handleTemplateActionComplete = async ({ originalText, newText, range }, me
     } catch (error) {
         console.error('[IndexNew] Error replacing template text:', error);
         alert('Không thể thay thế văn bản. Vui lòng thử lại.');
+    }
+};
+
+// ✅ Download template DOCX qua JavaScript (giống DocumentPreview)
+const downloadTemplate = async (fileUrl, templateName) => {
+    if (!fileUrl) {
+        alert('Không tìm thấy file template. Vui lòng thử lại sau.');
+        return;
+    }
+    
+    try {
+        console.log('[IndexNew] Downloading template', { fileUrl, templateName });
+        
+        // Fetch file as blob
+        const response = await fetch(fileUrl, {
+            method: 'GET',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+            },
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        // Get filename from URL or use template name
+        let filename = templateName || 'template';
+        if (!filename.endsWith('.docx')) {
+            filename += '.docx';
+        }
+        
+        // Create blob and download
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        console.log('[IndexNew] Template downloaded successfully', { filename });
+    } catch (error) {
+        console.error('[IndexNew] Error downloading template:', error);
+        alert('Không thể tải template. Vui lòng thử lại sau.');
     }
 };
 
