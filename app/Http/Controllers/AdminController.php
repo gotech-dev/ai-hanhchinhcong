@@ -764,21 +764,21 @@ class AdminController extends Controller
                             
                             // Try to generate placeholders (will extract existing if present)
                             $placeholders = $placeholderGenerator->generatePlaceholders($fullPath);
-                        
-                        if (!empty($placeholders)) {
-                            $metadata['placeholders'] = array_keys($placeholders);
-                            $metadata['placeholders_auto_generated'] = true;
                             
-                            Log::info('✅ [AdminController] Placeholders processed successfully', [
-                                'file' => $fileName,
-                                'placeholders_count' => count($placeholders),
-                                'placeholders' => array_keys($placeholders),
-                            ]);
-                        } else {
-                            Log::warning('⚠️ [AdminController] No placeholders found or generated', [
-                                'file' => $fileName,
-                            ]);
-                        }
+                            if (!empty($placeholders)) {
+                                $metadata['placeholders'] = array_keys($placeholders);
+                                $metadata['placeholders_auto_generated'] = true;
+                                
+                                Log::info('✅ [AdminController] Placeholders processed successfully', [
+                                    'file' => $fileName,
+                                    'placeholders_count' => count($placeholders),
+                                    'placeholders' => array_keys($placeholders),
+                                ]);
+                            } else {
+                                Log::warning('⚠️ [AdminController] No placeholders found or generated', [
+                                    'file' => $fileName,
+                                ]);
+                            }
                     } catch (\Exception $e) {
                         Log::error('❌ [AdminController] Error generating/extracting placeholders', [
                             'file' => $fileName,
@@ -802,6 +802,7 @@ class AdminController extends Controller
                                 'error' => $fallbackException->getMessage(),
                             ]);
                         }
+                    }
                     } else {
                         // ✅ FIX: Skip placeholder generation for report_assistant
                         Log::info('⏭️ [AdminController] Skipping placeholder generation for report_assistant', [
