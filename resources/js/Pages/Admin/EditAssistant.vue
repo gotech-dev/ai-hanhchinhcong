@@ -197,7 +197,7 @@
                         class="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                     <p class="text-xs text-gray-500 mt-1">
-                        Upload thêm template mới (template hiện có sẽ được giữ lại)
+                        Chỉ tải 1 file template
                     </p>
                     
                     <!-- Show existing templates -->
