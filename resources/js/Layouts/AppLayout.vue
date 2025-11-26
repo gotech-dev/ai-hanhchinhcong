@@ -32,14 +32,18 @@
                         >
                             Admin
                         </Link>
-                        <Link
+                        <form
                             v-if="auth.user"
-                            href="/logout"
-                            method="post"
-                            class="px-4 py-2 text-sm text-gray-700 hover:text-gray-900"
+                            @submit.prevent="logout"
+                            class="inline"
                         >
-                            Logout
-                        </Link>
+                            <button
+                                type="submit"
+                                class="px-4 py-2 text-sm text-gray-700 hover:text-gray-900"
+                            >
+                                Logout
+                            </button>
+                        </form>
                         <Link
                             v-else
                             href="/login"
@@ -60,10 +64,19 @@
 </template>
 
 <script setup>
-import { Link } from '@inertiajs/vue3';
+import { Link, router } from '@inertiajs/vue3';
 
 defineProps({
     auth: Object,
 });
+
+const logout = () => {
+    router.post('/logout', {}, {
+        onSuccess: () => {
+            // Force full page reload to ensure CSRF token is refreshed
+            window.location.href = '/';
+        },
+    });
+};
 </script>
 

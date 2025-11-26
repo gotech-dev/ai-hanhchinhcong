@@ -10,9 +10,9 @@
                 </p>
             </div>
             <form class="mt-8 space-y-6" @submit.prevent="login">
-                <div v-if="errors" class="bg-red-50 border border-red-200 rounded-lg p-4">
+                <div v-if="form.errors && Object.keys(form.errors).length > 0" class="bg-red-50 border border-red-200 rounded-lg p-4">
                     <ul class="list-disc list-inside text-sm text-red-700">
-                        <li v-for="(error, field) in errors" :key="field">
+                        <li v-for="(error, field) in form.errors" :key="field">
                             {{ Array.isArray(error) ? error[0] : error }}
                         </li>
                     </ul>
@@ -47,13 +47,28 @@
                     </div>
                 </div>
 
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center">
+                        <input
+                            id="remember"
+                            v-model="form.remember"
+                            name="remember"
+                            type="checkbox"
+                            class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                        <label for="remember" class="ml-2 block text-sm text-gray-900">
+                            Ghi nhớ đăng nhập
+                        </label>
+                    </div>
+                </div>
+
                 <div>
                     <button
                         type="submit"
-                        :disabled="processing"
+                        :disabled="form.processing"
                         class="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        <span v-if="!processing">Đăng nhập User</span>
+                        <span v-if="!form.processing">Đăng nhập User</span>
                         <span v-else class="flex items-center">
                             <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -78,38 +93,26 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
-import { Link, router } from '@inertiajs/vue3';
-import axios from 'axios';
+import { Link, useForm } from '@inertiajs/vue3';
 
-const form = ref({
+const form = useForm({
     email: '',
     password: '',
+    remember: false,
 });
 
-const errors = ref(null);
-const processing = ref(false);
-
-const login = async () => {
-    processing.value = true;
-    errors.value = null;
-    
-    try {
-        const response = await axios.post('/login', form.value);
-        
-        // Redirect will be handled by backend based on user role
-        // If user has assistants, redirect to admin panel
-        // Otherwise, redirect to assistants list
-        window.location.href = response.request?.responseURL || '/assistants';
-    } catch (error) {
-        if (error.response?.status === 422) {
-            errors.value = error.response.data.errors || {};
-        } else {
-            errors.value = { general: ['Đăng nhập thất bại. Vui lòng kiểm tra lại email và mật khẩu.'] };
-        }
-    } finally {
-        processing.value = false;
-    }
+const login = () => {
+    form.post('/login', {
+        preserveScroll: true,
+        onSuccess: (page) => {
+            // Force full page reload to ensure CSRF token is refreshed
+            window.location.href = page.url;
+        },
+        onError: () => {
+            // Reset password when login fails
+            form.reset('password');
+        },
+    });
 };
 </script>
 
